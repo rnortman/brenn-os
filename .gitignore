@@ -1,0 +1,60 @@
+# Build output. Globs are deliberately wide: an uncovered build artifact is one
+# `git add .` away from becoming tracked content.
+work/
+build/
+deploy/
+*.img
+*.img.gz
+*.img.xz
+*.img.zst
+*.zip
+*.tar
+*.tar.gz
+*.tar.xz
+*.tar.zst
+*.sbom
+*.spdx.json
+*.ext4
+*.squashfs
+*.deb
+
+# Language build trees.
+target/
+__pycache__/
+
+# Update bundles. Built artifacts, signed with a key that never lives here.
+*.raucb
+
+# Key material and certificates. These belong in the provisioning layer, never
+# in this repo and never in an image built from it. Ignored anyway, so a stray
+# generate-a-test-key step cannot leave one stageable.
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.gpg
+secrets/
+
+# Site- and unit-specific provisioning input — WiFi credentials, SSH host and
+# user keys, journal-upload endpoints, per-unit identity. Injected at provision
+# time from outside this repo; a local copy here is a convenience, not source.
+provisioning-local/
+
+# Serial-console and build logs.
+*.log
+
+# Personal Claude Code settings (settings.json is shared)
+.claude/settings.local.json
+
+# Local secret-scanner rule overrides. Never content in this repo.
+.gitleaks.local.toml
+
+# Private per-repo agent context (CLAUDE.md is shared)
+CLAUDE.local.md
+
+# Editor and OS noise
+*.swp
+.vscode/
+.idea/
+.DS_Store

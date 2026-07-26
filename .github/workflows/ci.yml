@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# All jobs only read the tree. Pinned here so a permissive repo-level default
+# cannot silently hand a write-capable token to cached actions, the downloaded
+# scanner, or anything `make check` executes.
+permissions:
+  contents: read
+
+jobs:
+  # Named for its role, not its contents. The required-status-check rule embeds
+  # this string, so a rename to track what the gate currently runs would leave
+  # the rule pointing at a job that no longer exists — and silently stop gating.
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # ubuntu-latest preinstalls shellcheck, but its version drifts with the
+      # runner image, so a tree that lints clean on a developer's machine can go
+      # red in CI on a rule an older version emits (and vice versa). Pin it —
+      # same discipline as the scrub job's scanner — so the gate is reproducible
+      # against a version a developer can install. The sha256 is the real gate
+      # (release assets are mutable); the version check is a secondary sanity
+      # line.
+      - name: Install shellcheck
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  shellcheck.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xJf shellcheck.tar.xz -O "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" > "$RUNNER_TEMP/bin/shellcheck"
+          chmod +x "$RUNNER_TEMP/bin/shellcheck"
+          "$RUNNER_TEMP/bin/shellcheck" --version | grep -qx "version: ${SHELLCHECK_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # The gate's contents live in the root `check` target, not here, so the
+      # whole thing is reproducible locally on a fresh clone. `check` skips the
+      # lint when shellcheck is absent; the step above is what makes that
+      # impossible here.
+      - run: make check
+
+  scrub:
+    name: scrub
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installed outside the checkout: the tree scan below must see repo
+      # content only, not the scanner's own ~30 MB of binary artifacts.
+      #
+      # The sha256 is the release's published checksum for this asset. Release
+      # assets are mutable, so the version self-check alone proves nothing — a
+      # swapped binary reports whatever version it likes and then writes the
+      # report that decides this job's verdict. The hash is the real gate; the
+      # version check stays as a secondary sanity line.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.0
+          GITLEAKS_SHA256: 79a3ab579b53f71efd634f3aaf7e04a0fa0cf206b7ed434638d1547a2470a66e
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks version | grep -qx "${GITLEAKS_VERSION}"
+
+      # --exit-code 0 makes findings a reporting outcome, so a nonzero exit here
+      # means the scanner itself malfunctioned.
+      - name: Scan tree
+        run: |
+          "$RUNNER_TEMP/gitleaks" dir . \
+            --config .gitleaks.toml \
+            --report-format json \
+            --report-path "$RUNNER_TEMP/findings.json" \
+            --no-banner \
+            --exit-code 0 \
+            --log-level error
+
+      # `ephemeral-reference` is a diff-time rule: it fires on a line as it is
+      # written, not on content that already exists. A whole-tree scan has no
+      # diff context and would report every pre-existing instance as new.
+      # Subtract it here or this job is red on a backlog it is not the gate for.
+      - name: Report
+        run: |
+          count=$(jq '[.[] | select(.RuleID != "ephemeral-reference")] | length' "$RUNNER_TEMP/findings.json")
+          if [ "$count" -ne 0 ]; then
+            echo "::error::$count finding(s) in tree scan"
+            jq -r '.[] | select(.RuleID != "ephemeral-reference")
+                   | "\(.File):\(.StartLine): [\(.RuleID)] \(.Description)"' "$RUNNER_TEMP/findings.json"
+            exit 1
+          fi
+          echo "clean (shared rules)"
