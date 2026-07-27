@@ -14,6 +14,11 @@
 # comparison job that never runs, or one that compares a file against itself. So
 # the chain is asserted here, where a broken link is a red gate rather than a
 # green run that checked nothing.
+#
+# Everything here reads the workflow file and nothing else, so it holds on any
+# clone. The other half of the lane's wiring — the paths it reads its artefacts
+# from, which are the pinned builder's to declare — is in 115, gated on the
+# submodule.
 
 set -uo pipefail
 

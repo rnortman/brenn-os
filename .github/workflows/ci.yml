@@ -222,11 +222,15 @@ jobs:
       # The SBOM is the one artefact worth keeping: the images are gigabytes and
       # the build is the source of truth for them, but what went into a build is
       # worth being able to look up afterwards.
+      #
+      # The directory names carry a version component set at build time, so the
+      # glob cannot spell the path out. `tests/host` verifies this glob against
+      # the builder's declared artefact paths.
       - name: Upload the SBOM
         uses: actions/upload-artifact@v4
         with:
           name: sbom-reachy
-          path: work/image-*/*.sbom
+          path: work/chroot-*/*.sbom
           if-no-files-found: error
 
   # The other half of the image lane: the same build, driven through the pinned
