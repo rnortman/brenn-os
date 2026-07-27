@@ -1,0 +1,88 @@
+#!/bin/sh
+#
+# Make an unpacked payload the one that runs.
+#
+#   brenn-app-activate <release-directory>
+#
+# Every way a payload can arrive ends here: the boot-time fetch, an operator
+# asking for a resync, and a tree pushed straight into the store from a
+# workstation during development. One choke point means the contract is checked
+# once, the switch is the same rename in all three cases, and there is one
+# place to look when what is running is not what was expected.
+#
+# The switch itself is a symlink rename, which is atomic: at no point does
+# `current` name something incomplete, and nothing has to be stopped first.
+
+set -eu
+
+app_dir=${BRENN_APP_DIR:-/run/brenn-app}
+
+# Overridable because the restart is the one thing here that needs the service
+# manager, and the decision to restart is worth exercising without one.
+restart_cmd=${BRENN_APP_RESTART:-systemctl restart --no-block brenn-app.service}
+
+releases="${app_dir}/releases"
+current="${app_dir}/current"
+lock="${app_dir}/.lock"
+
+die() {
+	echo "brenn-app-activate: $*" >&2
+	exit 1
+}
+
+# One writer at a time in the store, because the pruning below removes every
+# release that is not this one. A boot-time fetch and an operator's resync or
+# hand-pushed tree overlap exactly when an outage ends and somebody is
+# impatient, and interleaved they delete each other's payload and leave
+# `current` pointing at nothing. A caller that already holds the lock sets
+# BRENN_APP_LOCK_HELD=yes to skip acquisition.
+if [ "${BRENN_APP_LOCK_HELD:-no}" != yes ] && [ -d "$app_dir" ]; then
+	BRENN_APP_LOCK_HELD=yes
+	export BRENN_APP_LOCK_HELD
+	exec flock "$lock" "$(readlink -f -- "$0")" "$@"
+fi
+
+target=${1:-}
+[ -n "$target" ] || die "usage: $(basename -- "$0") <release-directory>"
+
+# Named by the path it really has, so that the comparison below is against the
+# store and not against however the caller spelled it.
+target=$(cd -- "$target" 2>/dev/null && pwd) || die "no such directory: ${1}"
+
+# Payloads live in the store or they do not run. `current` is a relative link
+# into it, so a payload somewhere else would either not resolve or would tie
+# what runs to a directory nothing manages — and it would survive the pruning
+# below, which is what keeps a capped tmpfs from filling up.
+name=$(basename -- "$target")
+[ "$target" = "${releases}/${name}" ] ||
+	die "${target} is not a release directory under ${releases}"
+
+# The contract, in full: one executable file called `run` at the root of the
+# tree. Everything else about a payload is the payload's business.
+[ -f "${target}/run" ] || die "${target} has no run at its root"
+[ -x "${target}/run" ] || die "${target}/run is not executable"
+
+ln -sfn "releases/${name}" "${current}.new"
+mv -T "${current}.new" "$current"
+
+# What was running is not needed and the mount it sits on is capped, so a
+# payload that is no longer current is removed rather than kept as history.
+# There is nothing to lose: a payload is a download away, and the tmpfs is
+# empty again after a reboot in any case.
+for old in "${releases}"/*; do
+	[ -d "$old" ] || continue
+	[ "$old" != "$target" ] || continue
+	rm -rf -- "$old"
+done
+
+echo "brenn-app-activate: activated ${name}"
+
+# The flip has already happened, so a service manager that cannot be reached is
+# reported rather than treated as a failed activation: what is current is
+# current, and the unit's own dependencies start it on the next attempt. Saying
+# so matters most to the operator who ran a resync and would otherwise conclude
+# the new payload is running.
+# shellcheck disable=SC2086  # the command is a word list, and overridable
+if ! $restart_cmd; then
+	echo "brenn-app-activate: ${name} is current, but the application could not be restarted" >&2
+fi

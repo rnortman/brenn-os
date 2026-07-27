@@ -1,0 +1,11 @@
+# The carrier's two USB audio devices: the microphone array and the audio
+# interface. Both are addressed through raw USB transfers as well as through
+# ALSA, so the account that runs the application needs the USB device node
+# itself and not only /dev/snd.
+#
+# Access is by group. The account is a member of `audio`, which already owns
+# the ALSA nodes, so one membership covers both ways of reaching the same
+# hardware; nothing else on the device is in that group.
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", MODE="0660", GROUP="audio"
+SUBSYSTEM=="usb", ATTR{idVendor}=="38fb", ATTR{idProduct}=="1001", MODE="0660", GROUP="audio"

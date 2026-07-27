@@ -1,0 +1,26 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-logging
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Log shipping. The journal is held in RAM and uploaded over
+#  TLS to the collector named by the selected provisioning generation, so that
+#  logs leave the device and nothing about them reaches the flash.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: brenn-provisioning,
+#  brenn-state
+# METAEND
+---
+# The journal is volatile — that is the brenn-state layer's doing — which makes
+# uploading it the only way a log outlives a reboot. Volatile plus uploaded is
+# also the only arrangement that keeps steady-state writes to a soldered-down
+# flash chip at zero while still leaving a fleet debuggable.
+#
+# The collector's address, and the trust anchor its certificate is judged
+# against, are site configuration and arrive with the generation. Nothing here
+# names an endpoint.
+#
+# The package also carries a journal gateway and a journal receiver, both of
+# which listen. Neither is wanted on an appliance whose only listener is sshd,
+# so both are masked rather than left to a preset.
+mmdebstrap:
+  packages:
+    - systemd-journal-remote

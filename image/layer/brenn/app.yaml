@@ -1,0 +1,36 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-app
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: The application runner. Obtains a payload over HTTPS into
+#  RAM at boot, verifies it, and execs its entry point as an unprivileged
+#  account. Nothing about any particular application is here.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: brenn-health,
+#  brenn-provisioning,
+#  brenn-users
+# METAEND
+---
+# The operating system knows exactly one thing about the application: how to
+# obtain a directory and exec the `run` at its root. Language, dependencies,
+# models and configuration are the payload's business, which is what keeps the
+# two release cadences apart — the image is signed, A/B and rare, the payload
+# is a download and a symlink flip.
+#
+# It lives in RAM. A dedicated, size-capped tmpfs holds the unpacked payloads,
+# so deploying a new one writes nothing to flash and a runaway payload fails
+# against its own mount rather than against the memory the system needs. The
+# consequence is deliberate: a device with no network has no application, and
+# converges on one the moment the network returns.
+#
+# Fetching is part of the health gate. A boot that cannot obtain a payload is
+# not a boot worth committing, so the gate this layer joins is what an update
+# and a configuration change are both judged by — and the retry that runs until
+# the deadman gives up is what keeps a brief outage from costing an update.
+#
+# Two host tools are needed to turn a URL into a directory and are here for no
+# other reason: curl speaks HTTPS against a private trust anchor, and zstd is
+# what tar hands a `.tar.zst` payload to.
+mmdebstrap:
+  packages:
+    - curl
+    - zstd

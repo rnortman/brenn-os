@@ -1,0 +1,14 @@
+[Unit]
+Description=RAM store behind the /var overlay
+Documentation=man:systemd.mount(5)
+DefaultDependencies=no
+Conflicts=umount.target
+Before=umount.target local-fs.target var.mount
+
+[Mount]
+What=tmpfs
+Where=/run/brenn/var
+Type=tmpfs
+# Capped so a runaway writer fails against this mount instead of eating the
+# memory the application needs. Nothing here survives a reboot by design.
+Options=mode=0755,nosuid,nodev,size=256M

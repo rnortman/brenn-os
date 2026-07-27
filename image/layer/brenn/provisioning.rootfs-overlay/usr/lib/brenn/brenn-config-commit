@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# Keep the configuration this boot is trying.
+#
+# A candidate generation gets one boot. This runs at the end of that boot, once
+# the device has reached the health gate — it has an address and it accepts a
+# connection, which together mean the change can be undone from off the device
+# if it turns out to be wrong in some way no gate can see. Committing is one
+# rename: the candidate becomes the committed generation, and the one it
+# replaces stays as history.
+#
+# Until this runs, nothing has changed: the committed link still points where
+# it did, and any reset returns the device to it.
+
+set -eu
+
+lib=${BRENN_CONFIG_LIB:-$(dirname -- "$(readlink -f -- "$0")")/brenn-config-lib.sh}
+# shellcheck source=brenn-config-lib.sh
+. "$lib"
+
+prov_root=${BRENN_PROVISIONING_ROOT:-/data/provisioning}
+link=${BRENN_PROVISIONING_LINK:-/run/brenn/provisioning}
+trial_flag=${BRENN_CONFIG_TRIAL_FLAG:-/run/brenn/config-trial}
+
+active="${prov_root}/active"
+trial="${prov_root}/trial"
+marker="${prov_root}/trial-attempted"
+
+die() {
+	echo "brenn-config-commit: $*" >&2
+	exit 1
+}
+
+# The unit is conditioned on this too. Checked again here because the program
+# is also the thing an operator runs by hand, and committing on a boot that is
+# not trying anything would make whatever happens to be staged the committed
+# configuration without it ever having been booted.
+[ -e "$trial_flag" ] || die "this boot is not trying a candidate; nothing to commit"
+
+[ -L "$trial" ] || [ -e "$trial" ] || die "no candidate at ${trial}; nothing to commit"
+
+# Whether anything was published is asked of the path itself: `readlink -f`
+# answers for a name that does not exist as readily as for one that does, so a
+# boot whose selection published nothing would otherwise reach the comparison
+# below with the link's own path standing in for a generation.
+[ -e "$link" ] || die "nothing is published at ${link}"
+
+# Commit what is running, not whatever is on trial now. The selector publishes
+# the generation directory it resolved, so the two disagreeing means the store
+# was changed underneath this boot — and committing then would promote a
+# generation nothing has booted.
+running=$(readlink -f "$link" 2>/dev/null) || running=""
+candidate=$(readlink -f "$trial" 2>/dev/null) || candidate=""
+
+[ -n "$running" ] || die "${link} does not resolve to a generation; nothing to commit against"
+[ "$running" = "$candidate" ] ||
+	die "the candidate (${candidate}) is not what this boot is running (${running}); refusing to commit"
+
+# The generation the device was running before stays in place as history; it
+# costs the space it takes and is what a later change is measured against.
+mv -T "$trial" "$active"
+
+# The attempt record belongs to the candidate. Leaving it would make the next
+# candidate look like one that had already failed, and it would be discarded on
+# the boot that should have tried it.
+rm -f "$marker"
+
+brenn_flush "$prov_root"
+
+echo "brenn-config-commit: committed $(basename "$candidate")"

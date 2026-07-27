@@ -1,0 +1,28 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-rpi-archive-pin
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Pins the Raspberry Pi archive kernel and boot firmware to
+#  exact versions. The archive has no snapshot service, so an apt preferences
+#  file is the only mechanism that makes a rebuild resolve the same kernel.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: rpi-debian-trixie
+#
+# X-Env-VarPrefix: brennpin
+#
+# X-Env-Var-assetdir: ${DIRECTORY}/apt
+# X-Env-Var-assetdir-Desc: Directory holding the apt preferences fragment.
+# X-Env-Var-assetdir-Required: n
+# X-Env-Var-assetdir-Valid: dir
+# X-Env-Var-assetdir-Set: y
+# METAEND
+---
+mmdebstrap:
+  # The preferences file has to be in place before apt resolves anything, so
+  # this is a setup hook rather than a customize hook. It stays in the built
+  # root: an on-device apt run would otherwise ignore the pin.
+  #
+  # TODO(rpi-archive-mirror): a version removed from the archive breaks
+  # rebuilds of old commits. Needs a mirror we control.
+  setup-hooks:
+    - install -D -m 0644 "${IGconf_brennpin_assetdir}/preferences.rpi-pin"
+      "$1/etc/apt/preferences.d/10-brenn-rpi-pin"

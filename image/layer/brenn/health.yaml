@@ -1,0 +1,30 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-health
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: The system health gate — one definition of what makes a
+#  boot good enough to keep, so that an OS update and a configuration change
+#  are committed or reverted by the same rule.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: brenn-ssh
+# METAEND
+---
+# Two mechanisms on this device replace something that is running with
+# something that has never run here before: an OS update flips the boot pair,
+# and a configuration change swaps the generation. Both give the candidate one
+# boot to prove itself, and both need the same answer to the same question —
+# did this boot come up far enough to be worth keeping?
+#
+# One target answers it. Committing anything is ordered after the target and
+# depends on it, so a boot that never reaches it commits nothing, and the
+# deadman that follows returns the device to what it had. Splitting the
+# question in two would let an update commit on evidence a configuration
+# change would have rejected.
+#
+# What counts as healthy grows with the system: the application payload joins
+# it with the app-runner. Each part is contributed by the layer that owns it,
+# through the target's `.requires` directory, so this layer stays the
+# definition and not the inventory.
+#
+# Static units only, so this layer contributes an overlay and no hooks.
+mmdebstrap:
+  packages: []

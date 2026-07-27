@@ -17,25 +17,67 @@ SHELL := /bin/bash
 .PHONY: help
 help:
 	@echo "Repo-root targets:"
-	@echo "  make check         the lint gate (shell), same contents CI runs"
+	@echo "  make check         the gate (shell lint, layer metadata, host tests), same contents CI runs"
+	@echo "  make image         build an image        (PROFILE=$(PROFILE))"
+	@echo "  make bundle        pack the last build into a signed update bundle"
+	@echo "  make test-host     assert against the tree — no image, no device"
+	@echo "  make test-image    assert against the built image"
+	@echo "  make test-device   assert against a live unit over SSH (needs a target)"
 	@echo "  make setup-hooks   wire git at .githooks, check tooling (once per clone)"
 	@echo "  make scrub-tree    whole-tree secret sweep — the sweep a clean tree is declared on"
 
-# Scripts are enumerated from the index, not from a fixed glob, so a new one
-# cannot join the tree unlinted, and the pre-commit run lints exactly what is
-# staged. -z plus xargs -0 so a path with whitespace stays one path.
-#
-# The linter is optional here — a machine without it is not blocked from
-# committing — but the skip is loud, and CI pins the linter so the check
-# cannot skip its way to merge.
+# Everything profile-varying lives in the profile's config and layer, so this
+# is the only knob the image targets need.
+PROFILE ?= reachy
+
+# Each lane is a script of its own so that it is runnable by itself and reads
+# the same way in CI as it does here. Each enumerates its own work from the
+# index, so nothing joins the tree unchecked.
 .PHONY: check
 check:
-	@if ! command -v shellcheck >/dev/null 2>&1; then \
-	    echo "check: shellcheck not installed — SHELL LINT SKIPPED (pinned and enforced in CI)"; \
-	    exit 0; \
-	fi; \
-	echo "check: shellcheck on $$(git ls-files '*.sh' .githooks | wc -l) tracked script(s)"; \
-	git ls-files -z '*.sh' .githooks | xargs -0 --no-run-if-empty shellcheck
+	@scripts/lint-shell.sh
+	@scripts/lint-layers.sh
+	@$(MAKE) --no-print-directory test-host
+
+# Building an image is slow and pulls the network, so it is not part of `check`.
+.PHONY: image
+image:
+	scripts/build-image.sh $(PROFILE)
+
+# Packs what `image` produced; does not build. The signing material comes from
+# the environment — BRENN_BUNDLE_CERT and BRENN_BUNDLE_KEY, plus an optional
+# BRENN_BUNDLE_KEYRING to verify the result against — because no key of any
+# kind is ever in this tree.
+.PHONY: bundle
+bundle:
+	scripts/make-bundle.sh --profile $(PROFILE)
+
+# The parts of the system that are ordinary programs — the boot-time decisions
+# above all — exercised against a temporary tree. No image, no hardware, and
+# fast enough to be part of the gate, which is the point: a decision that only
+# runs on a device is a decision that only fails on a device.
+.PHONY: test-host
+test-host:
+	tests/run.sh host
+
+# Reads the build output; does not build. Fails rather than passes when there
+# is nothing to read.
+.PHONY: test-image
+test-image:
+	BRENN_PROFILE=$(PROFILE) tests/run.sh image
+
+# The bring-up lane: assertions against a real unit, over SSH. Inherently
+# local — it needs a provisioned device on the same network — so it is not part
+# of `check` and CI never runs it.
+#
+# Where that device is is site information and never enters the tree: set
+# BRENN_DEVICE_HOST (and BRENN_DEVICE_USER, BRENN_DEVICE_SSH_OPTS) or write
+# them into .local/device.conf, which is gitignored. Unconfigured, every test
+# skips and the runner fails the lane rather than reporting a green run against
+# nothing.
+.PHONY: test-device
+test-device:
+	BRENN_PROFILE=$(PROFILE) tests/run.sh device
 
 # Wire git at the tracked hooks dir and report any missing tooling. Idempotent;
 # run once per clone.

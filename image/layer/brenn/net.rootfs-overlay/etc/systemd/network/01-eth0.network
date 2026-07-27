@@ -1,0 +1,17 @@
+# The bench cable. Present on a desk, absent in the field, so it is one of two
+# ways to be online rather than a requirement.
+
+[Match]
+Name=eth0
+
+[Network]
+DHCP=yes
+
+[DHCPv4]
+# The name the network registers is the provisioned one; it is set before this
+# link is configured.
+SendHostname=yes
+UseDomains=yes
+
+[Link]
+RequiredForOnline=yes

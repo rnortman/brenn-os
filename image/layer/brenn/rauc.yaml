@@ -1,0 +1,31 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-rauc
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: The OS update mechanism. RAUC installs a signed bundle onto
+#  the inactive boot and system pair; the firmware's tryboot flag gives that
+#  pair one boot to prove itself, and only a boot that reaches the health gate
+#  is committed.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: brenn-health,
+#  brenn-provisioning
+# METAEND
+---
+# An update is installed onto the pair that is not running, tried once, and
+# either committed or forgotten. Nothing in that sequence writes to the
+# running system, and nothing needs a cable: an update is a file copied to the
+# writable partition and a command over SSH.
+#
+# The three pieces here are the configuration describing the slots, the script
+# that drives the firmware's slot selection, and the pair of units that decide
+# a trial boot's fate. The signing keys are not among them and never will be:
+# the image carries no certificate, and the keyring that bundles are judged
+# against arrives with the provisioning generation.
+#
+# The service half of RAUC talks over the system bus, which is also why a bus
+# is installed here — there is no other user of it on this device, and without
+# one there is no way to ask for an install or to mark a boot good.
+mmdebstrap:
+  packages:
+    - rauc
+    - rauc-service
+    - dbus

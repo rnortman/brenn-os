@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# Give up on a configuration candidate that never committed.
+#
+# The failures that announce themselves are already covered: a boot that panics
+# or hangs resets, and the selector discards a candidate whose attempt it finds
+# already recorded. What is left is the quiet failure — a device that comes up,
+# stays up, and never reaches the health gate because the credentials it was
+# just given do not get it onto the network. That candidate would otherwise
+# stay the selected configuration indefinitely, with nobody able to reach the
+# device to change it back.
+#
+# So a timer fires once, well after everything that could have committed has
+# had its chance, and this reboots if nothing did. The candidate's attempt is
+# already recorded, so the next boot discards it and runs the generation that
+# was committed before — which is the one that worked.
+#
+# Whether the commit happened is not tracked separately: the candidate link is
+# the record. Committing renames it onto the committed link, so a candidate
+# still standing is a transaction still open.
+
+set -eu
+
+prov_root=${BRENN_PROVISIONING_ROOT:-/data/provisioning}
+reboot_cmd=${BRENN_DEADMAN_REBOOT:-systemctl reboot}
+
+trial="${prov_root}/trial"
+
+if [ ! -L "$trial" ] && [ ! -e "$trial" ]; then
+	echo "the configuration candidate committed; nothing to do"
+	exit 0
+fi
+
+echo "the configuration candidate did not commit; rebooting to the committed generation" >&2
+
+# Unquoted on purpose: the command is a word list, and making it overridable is
+# what lets the decision be exercised without rebooting the machine running the
+# test.
+# shellcheck disable=SC2086
+exec $reboot_cmd

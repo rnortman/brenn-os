@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Did this boot take the one-shot tryboot path?
+#
+# Exits 0 on a trial boot and 1 on an ordinary one, which is the contract for
+# an ExecCondition: the units that only make sense while a candidate pair is on
+# trial — committing it, and the deadman that gives up on it — are skipped
+# rather than failed on every other boot. Skipping them is what keeps an
+# ordinary boot from writing anything at all.
+#
+# The firmware reports the answer in the device tree, as a 32-bit big-endian
+# value, and it is the only source: the flag itself is cleared before the
+# kernel starts.
+
+set -eu
+
+dt_dir=${BRENN_TRYBOOT_DT_DIR:-/proc/device-tree/chosen/bootloader}
+flag="${dt_dir}/tryboot"
+
+[ -e "$flag" ] || exit 1
+
+value=$(od -An -tu4 --endian=big -N4 "$flag" 2>/dev/null | tr -d '[:space:]')
+[ -n "$value" ] || exit 1
+[ "$value" -ne 0 ] || exit 1
+
+exit 0

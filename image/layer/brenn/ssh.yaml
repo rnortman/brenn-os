@@ -1,0 +1,31 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-ssh
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Remote access. Key-only sshd, taking its host identity and
+#  its access list from the selected provisioning generation and running at all
+#  only on a device that has both.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: brenn-provisioning
+# METAEND
+---
+# sshd is the only way onto a device short of the serial console, and the only
+# listener the design allows. Everything about it that could differ between
+# devices — the host key, the keys admitted — is provisioned, so the image is
+# the same on every unit and a reflash does not change the host identity a
+# client has already learned.
+#
+# The package generates host keys when it is configured, which in this build
+# means baking one key pair into an image installed on every device. The hook
+# removes them; the running system takes its key from the generation and never
+# generates one, which it could not do anyway on a read-only root.
+mmdebstrap:
+  packages:
+    - openssh-server
+  customize-hooks:
+    - |-
+      #
+      # No host identity in the image.
+      #
+      # An image is generic; a host key is the least generic thing there is.
+      set -eu
+      rm -f "$1"/etc/ssh/ssh_host_*

@@ -1,0 +1,27 @@
+[Unit]
+Description=brenn system health gate
+
+# Reached only when the device is usable from off the device: it has an
+# address, and it accepts a connection. Both are hard requirements rather than
+# wants — a boot that has neither is a boot nobody can fix remotely, which is
+# precisely the boot that must not be committed.
+#
+# The wait itself is required by name as well as the target it belongs to.
+# network-online.target only *wants* the wait, and a want that fails still
+# leaves its target active — so a device that never associates times the wait
+# out, fails it, and reaches the target anyway. Requiring the wait is what
+# makes a boot with no address fail this gate instead of passing it, which is
+# the whole case the gate exists for: credentials that do not work.
+#
+# sshd's own conditions decide whether it runs at all; a device that was never
+# provisioned skips it and is not held back here, since on such a device
+# nothing has been staged to commit either.
+Requires=network-online.target
+After=network-online.target
+Requires=systemd-networkd-wait-online.service
+After=systemd-networkd-wait-online.service
+Requires=ssh.service
+After=ssh.service
+
+[Install]
+WantedBy=multi-user.target

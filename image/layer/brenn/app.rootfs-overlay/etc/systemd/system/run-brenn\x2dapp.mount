@@ -1,0 +1,20 @@
+[Unit]
+Description=RAM store for application payloads
+Documentation=man:systemd.mount(5)
+DefaultDependencies=no
+Conflicts=umount.target
+Before=umount.target local-fs.target
+
+[Mount]
+What=tmpfs
+Where=/run/brenn-app
+Type=tmpfs
+# Capped, because everything an application brings with it lands here: the
+# payload, whatever it unpacks, and the models it pulls into memory to run
+# inference against. A payload that outgrows this budget fails against this
+# mount, which is a failed unit and a log line, rather than against the
+# system's memory, which is a device that stops answering.
+#
+# noexec is absent on purpose: the payload's entry point is executed from
+# here, which is the whole arrangement.
+Options=mode=0755,nosuid,nodev,size=1536M

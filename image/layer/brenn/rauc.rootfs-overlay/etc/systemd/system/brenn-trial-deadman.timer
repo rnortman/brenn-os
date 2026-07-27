@@ -1,0 +1,14 @@
+[Unit]
+Description=Deadman for a trial boot
+
+[Timer]
+# Long enough that everything in the health gate has had its chance —
+# associating with an access point, leasing an address, reaching a time
+# server — and short enough that a candidate nobody can reach is not the
+# running system for an afternoon. A knob: raise it if the gate legitimately
+# grows slower.
+OnBootSec=10min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

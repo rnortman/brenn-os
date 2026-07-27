@@ -1,0 +1,20 @@
+[Unit]
+Description=Give up on a trial boot that never committed
+# No start limit, so the retry below can go on for as long as the boot does.
+# A candidate that is up and unreachable is the state this unit exists to end;
+# giving up on ending it is worse than any amount of noise in the journal.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecCondition=/usr/lib/brenn/brenn-tryboot-check
+ExecStart=/usr/lib/brenn/brenn-trial-deadman
+
+# The timer fires once, so without this a single transient failure — the
+# selector partition briefly mounted by the commit that is running at the same
+# moment, most plausibly — would leave nothing to re-check for the rest of the
+# boot, and an uncommitted candidate up indefinitely. A failed condition is a
+# skip rather than a failure, so an ordinary boot still runs this exactly zero
+# times.
+Restart=on-failure
+RestartSec=30s

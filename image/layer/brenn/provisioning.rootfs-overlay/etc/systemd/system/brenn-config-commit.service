@@ -1,0 +1,23 @@
+[Unit]
+Description=Commit the configuration generation this boot is trying
+
+# The same gate an operating-system update commits on, for the same reason: a
+# change is kept only once the device it changed can be reached to change it
+# again. Requiring the gate rather than merely following it is what makes a
+# gate that was never reached leave this unit unstarted instead of running it
+# anyway.
+Requires=brenn-healthy.target
+After=brenn-healthy.target
+
+# Only a boot running a candidate has anything to commit. Every ordinary boot
+# skips this before it runs, which is what keeps a settled device from writing
+# to flash once per boot for no reason.
+ConditionPathExists=/run/brenn/config-trial
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/brenn/brenn-config-commit
+
+[Install]
+WantedBy=multi-user.target

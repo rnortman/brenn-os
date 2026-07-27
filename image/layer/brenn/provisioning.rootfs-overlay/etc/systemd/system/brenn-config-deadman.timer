@@ -1,0 +1,14 @@
+[Unit]
+Description=Deadman for a configuration trial
+
+[Timer]
+# Long enough that everything in the health gate has had its chance with the
+# new configuration — associating with an access point, leasing an address,
+# reaching a time server — and short enough that a device nobody can reach is
+# not left that way for an afternoon. The same window the update trial gets,
+# for the same reasons.
+OnBootSec=10min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

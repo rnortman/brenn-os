@@ -1,0 +1,39 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-base
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: brenn-os base system. Composes the Debian snapshot base,
+#  the Raspberry Pi archive, systemd and the A/B slot mapper, and installs the
+#  device package payload.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: debian-trixie-arm64-minbase-snapshot,
+#  rpi-debian-trixie,
+#  systemd-min,
+#  systemd-net-min,
+#  systemd-timesyncd,
+#  rpi-ab-slot-mapper
+# METAEND
+---
+# The layer's rootfs overlay carries one thing: the manager configuration that
+# arms the hardware watchdog. It belongs to no subsystem — it is a property of
+# the base system, and every other part of the design that recovers from a hang
+# assumes a wedged device eventually resets itself.
+mmdebstrap:
+  architectures:
+    - arm64
+  aptopts:
+    - APT::Install-Suggests "false"
+    - APT::Install-Recommends "false"
+  dpkgopts:
+    - path-exclude=/usr/share/man/*
+    - path-include=/usr/share/man/man[1-9]/*
+    - path-exclude=/usr/share/locale/*
+    - path-include=/usr/share/locale/locale.alias
+    - path-exclude=/usr/share/doc/*
+    - path-include=/usr/share/doc/*/copyright
+    - path-exclude=/usr/share/info/*
+    - path-exclude=/usr/share/lintian/*
+  packages:
+    # The device package set is exhaustive by intent: anything not named here
+    # or pulled in by the layout is not meant to be on the device.
+    - python3-minimal
+    - dfu-util

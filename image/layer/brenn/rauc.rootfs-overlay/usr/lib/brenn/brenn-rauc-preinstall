@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# Refuse an operating-system update while a configuration change is on trial.
+#
+# RAUC runs this before it writes anything, and aborts the installation if it
+# fails. That is the other half of one transaction at a time: a configuration
+# candidate and a slot pair on trial are both judged by the same health gate,
+# so a boot that failed with both in flight gives no answer as to which of them
+# was wrong, and reverting one of them leaves the other in place.
+#
+# A candidate is in flight from the moment it is installed until the boot
+# trying it commits or the next boot discards it. Waiting out that boot is the
+# whole cost of the refusal.
+#
+# It also opens the other side of the same exclusion. Writing a slot pair takes
+# minutes, and until the flag is armed at the end of it there is nothing on the
+# device that says an update is happening — so a configuration change started
+# in that window would find both checks clear and be tried in the same boot.
+# The record written here is what closes that window; the backend removes it
+# when it arms the flag, and it lives on the runtime filesystem so an install
+# that died leaves nothing behind a reboot.
+
+set -eu
+
+prov_root=${BRENN_PROVISIONING_ROOT:-/data/provisioning}
+trial="${prov_root}/trial"
+installing=${BRENN_RAUC_INSTALLING:-/run/brenn/rauc-installing}
+
+if [ -L "$trial" ] || [ -e "$trial" ]; then
+	echo "a configuration change is on trial; let it commit or revert before updating" >&2
+	exit 1
+fi
+
+mkdir -p "$(dirname "$installing")"
+: >"$installing"
+
+exit 0

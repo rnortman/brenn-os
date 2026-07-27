@@ -1,0 +1,201 @@
+#!/bin/sh
+#
+# Change a device's configuration as a transaction.
+#
+#   brenn-config-apply [-n] [--no-reboot] <candidate-dir>
+#
+# The core of a generation — wireless credentials, host name, the address the
+# application comes from — is exactly the chain that puts a device beyond reach
+# when it is wrong. Editing it in place would make one typo a trip to wherever
+# the device is. So a change is installed as a new generation, marked as the
+# candidate, and tried on the next boot: reaching the health gate commits it,
+# and anything else — a crash, a device that never gets an address, the deadman
+# timer — puts the previous generation back.
+#
+# The candidate is checked against the same contract the flash-time tool
+# applies, by the same program, before anything is written.
+#
+# -n checks the candidate and stops. --no-reboot installs it and leaves the
+# reboot to the caller, for changing configuration and updating in one window.
+
+set -eu
+
+# Siblings are found beside this program, through whatever link the caller
+# reached it by. The link is resolved first because the documented way in is a
+# bare command over SSH, which arrives here as the path entry — a directory
+# holding links and none of the programs named below.
+here=$(dirname -- "$(readlink -f -- "$0")")
+
+lib=${BRENN_CONFIG_LIB:-${here}/brenn-config-lib.sh}
+# shellcheck source=brenn-config-lib.sh
+. "$lib"
+
+prov_root=${BRENN_PROVISIONING_ROOT:-/data/provisioning}
+
+# The two programs beside this one: the rules, and the thing that writes a
+# generation the way both this tool and the flash-time one have to write it.
+# Named relative to this program so that an in-tree copy runs its in-tree
+# siblings.
+validate=${BRENN_CONFIG_VALIDATE:-${here}/brenn-config-validate}
+installer=${BRENN_CONFIG_INSTALL:-${here}/brenn-config-install}
+
+# From the update layer rather than this one, so it is named absolutely: an
+# image may carry provisioning without an update mechanism, and then there is
+# no such program and nothing to conflict with.
+tryboot_check=${BRENN_TRYBOOT_CHECK:-/usr/lib/brenn/brenn-tryboot-check}
+reboot_param=${BRENN_REBOOT_PARAM:-/run/systemd/reboot-param}
+installing=${BRENN_RAUC_INSTALLING:-/run/brenn/rauc-installing}
+reboot_cmd=${BRENN_APPLY_REBOOT:-systemctl reboot}
+
+active="${prov_root}/active"
+trial="${prov_root}/trial"
+marker="${prov_root}/trial-attempted"
+
+check_only=0
+do_reboot=1
+
+usage() {
+	echo "usage: brenn-config-apply [-n] [--no-reboot] <candidate-dir>" >&2
+	echo "  -n           check the candidate and stop; write nothing" >&2
+	echo "  --no-reboot  install the candidate but leave the reboot to the caller" >&2
+}
+
+die() {
+	echo "brenn-config-apply: $*" >&2
+	exit 1
+}
+
+while [ $# -gt 0 ]; do
+	case $1 in
+		-n)
+			check_only=1
+			shift
+			;;
+		--no-reboot)
+			do_reboot=0
+			shift
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		--)
+			shift
+			break
+			;;
+		-*)
+			usage
+			exit 2
+			;;
+		*) break ;;
+	esac
+done
+
+[ $# -eq 1 ] || {
+	usage
+	exit 2
+}
+
+candidate=$1
+
+[ -d "$candidate" ] || die "no such directory: ${candidate}"
+[ -x "$validate" ] || die "the contract checker is missing: ${validate}"
+[ -x "$installer" ] || die "the generation installer is missing: ${installer}"
+
+"$validate" "$candidate" || die "the candidate does not satisfy the contract; nothing was written"
+echo "brenn-config-apply: ${candidate} satisfies the contract"
+
+[ "$check_only" -eq 0 ] || exit 0
+
+[ "$(id -u)" -eq 0 ] || die "installing a generation needs root (the files belong to root)"
+
+# One transaction at a time. A configuration trial and an operating-system
+# trial both work by giving one boot to something that replaces something that
+# worked, and both are judged by the same health gate; running them together
+# would leave a failed boot with two things to blame and a rollback that undoes
+# only one of them.
+#
+# An update is in flight from the moment its installation starts until the boot
+# that tries it has committed, and each stretch of that has its own evidence:
+# the record the update's own pre-install check writes while it is writing
+# slots, the reboot parameter systemd will pass to the firmware once the flip
+# is staged, and what the tryboot check reports on the boot that is trying it.
+# An image with no update mechanism installed has none of them, and nothing to
+# conflict with.
+conflict_check() {
+	if [ -r "$reboot_param" ] && grep -q tryboot "$reboot_param"; then
+		die "${1}an operating-system update is staged; reboot into it and let it settle first"
+	fi
+
+	if [ -e "$installing" ]; then
+		die "${1}an operating-system update is being installed; let it finish and settle first"
+	fi
+
+	if [ -x "$tryboot_check" ] && "$tryboot_check"; then
+		die "${1}this boot is trying an operating-system update; let it commit or roll back first"
+	fi
+
+	if [ -L "$trial" ] || [ -e "$trial" ]; then
+		die "${1}a configuration candidate is already in flight; let it commit or revert first"
+	fi
+}
+
+conflict_check ""
+
+[ -d "$active" ] || die "no committed generation at ${active}: provision this device first"
+
+# The next name in sequence. Generation names are ordinary directories and the
+# links are what select, so the number is for the operator's benefit rather
+# than the mechanism's — but it has to be one nothing else holds, including a
+# staging directory an interrupted run left behind.
+next=1
+for entry in "${prov_root}"/gen-*; do
+	[ -e "$entry" ] || continue
+	n=${entry##*/gen-}
+	n=${n%.new}
+	case $n in
+		'' | *[!0-9]*) continue ;;
+	esac
+	[ "$n" -lt "$next" ] || next=$((n + 1))
+done
+
+gen="gen-${next}"
+
+[ ! -e "${prov_root}/${gen}" ] || die "${prov_root}/${gen} already exists; inspect and remove it"
+
+# The write itself, by the program the flash-time tool also uses, so that a
+# generation installed over the network is the same thing as one installed on
+# the bench down to its modes.
+"$installer" "$candidate" "${prov_root}/${gen}" || die "the candidate was not installed"
+
+# Asked again now that the copy is made, immediately before the candidate
+# becomes something a boot would take up. Writing a generation is not instant
+# and an update that started meanwhile would otherwise be armed against the
+# same boot as this change. The generation stays on the device, selected by
+# nothing — which is what an interrupted transaction always leaves.
+conflict_check "${prov_root}/${gen} was written but is not on trial: "
+
+# An attempt record left by an earlier transaction has to go before the
+# candidate appears, or the boot that should try this one would read the record
+# as this one having already failed and discard it unbooted.
+rm -f "$marker"
+
+ln -s "$gen" "${trial}.new"
+mv -T "${trial}.new" "$trial"
+
+brenn_flush "$prov_root"
+
+echo "brenn-config-apply: installed ${candidate} as ${gen}, on trial"
+
+if [ "$do_reboot" -eq 0 ]; then
+	echo "brenn-config-apply: reboot to try it"
+	exit 0
+fi
+
+echo "brenn-config-apply: rebooting to try it"
+
+# Unquoted on purpose: the command is a word list, and making it overridable is
+# what lets the decision be exercised without rebooting the machine running the
+# test.
+# shellcheck disable=SC2086
+exec $reboot_cmd

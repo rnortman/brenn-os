@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Fetch the application payload again and switch to it, without rebooting.
+#
+#   ssh <unit> brenn-app-resync
+#
+# The deployment loop for a released payload: the server has something new at
+# the same URL, and this is what goes and gets it. A fresh release directory is
+# unpacked alongside the running one and the switch is the same rename the boot
+# path uses, so nothing is written to flash and nothing is stopped until the
+# replacement is complete and has been checked.
+#
+# One attempt, and it reports what happened. Somebody is waiting for the
+# answer, which is the difference between this and the same program run at
+# boot, where waiting out an outage is the right behaviour.
+
+set -eu
+
+if [ $# -ne 0 ]; then
+	echo "usage: $(basename -- "$0")" >&2
+	exit 2
+fi
+
+# The fetch is found beside this program, through whatever link the caller
+# reached it by. The link is resolved first because the documented way in is the
+# bare command above, which arrives here as the path entry — a directory that
+# holds links to the two programs an operator runs and none of the rest of the
+# runner.
+exec "$(dirname -- "$(readlink -f -- "$0")")/brenn-app-fetch" --once

@@ -1,0 +1,25 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-provisioning
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Selects the provisioning generation this boot runs with
+#  and publishes it at a stable runtime path, so that no service reaches into
+#  the writable partition for site configuration. Also takes the machine id
+#  from that generation.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: systemd-min
+# METAEND
+---
+# Everything unit- or site-specific — credentials, keys, endpoints, identity —
+# arrives at provisioning time as a numbered generation on the writable
+# partition, and never from this repo or from the image.
+#
+# A generation is committed or on trial, and the selection between the two is
+# a boot-time decision. Services are wired to the published path only, which
+# is what makes a configuration change a transaction rather than an edit: the
+# unit either boots with the candidate or, having failed to commit it, boots
+# with its predecessor.
+#
+# This layer contributes static files only, so it ships as the layer's rootfs
+# overlay rather than as hooks.
+mmdebstrap:
+  packages: []

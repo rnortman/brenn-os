@@ -1,0 +1,15 @@
+[Unit]
+Description=Create the /var overlay upper and work directories
+Documentation=man:mount(8)
+DefaultDependencies=no
+Requires=run-brenn-var.mount
+After=run-brenn-var.mount
+Before=local-fs.target var.mount
+ConditionPathIsMountPoint=/run/brenn/var
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# overlayfs requires the upper and work directories to be distinct and on the
+# same filesystem, and it refuses to mount if either is missing.
+ExecStart=/bin/mkdir -p /run/brenn/var/upper /run/brenn/var/work

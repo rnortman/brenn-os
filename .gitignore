@@ -41,6 +41,11 @@ secrets/
 # time from outside this repo; a local copy here is a convenience, not source.
 provisioning-local/
 
+# Local workstation overlay — which unit the device test lane talks to, and
+# anything else that is true of one machine and one network. Site information,
+# so it is configured here and never tracked.
+.local/
+
 # Serial-console and build logs.
 *.log
 

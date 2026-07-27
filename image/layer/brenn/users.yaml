@@ -1,0 +1,34 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-users
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Finishes the baked account set. The account itself is
+#  created from the device.user1* settings; this layer gives it a home on the
+#  volatile /var and no shell, and removes the /home directory that comes
+#  with it.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: device-user-admin
+# METAEND
+---
+# The account set is baked, with numerically pinned ids, so that a change to
+# it ships as an A/B system update with rollback, and so that ownership of
+# anything on the persistent partition survives updates and slot flips.
+#
+# Requiring device-user-admin is what orders these hooks after the account
+# exists.
+mmdebstrap:
+  customize-hooks:
+    - |-
+      #
+      # Home on the volatile /var, no interactive shell.
+      #
+      # The account is not an SSH account and never logs in: it exists so the
+      # application payload runs unprivileged. Its home is writable but lives
+      # in RAM, which is where anything the payload scribbles belongs.
+      set -eu
+      user=${IGconf_device_user1:?}
+      home=/var/lib/brenn-app
+      chroot "$1" usermod --home "$home" --shell /usr/sbin/nologin "$user"
+      install -d -m 0700 \
+        -o "${IGconf_device_user1uid:?}" -g "${IGconf_device_user1gid:?}" \
+        "$1${home}"
+      rm -rf "$1/home/${user}"

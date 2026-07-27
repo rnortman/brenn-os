@@ -1,0 +1,17 @@
+[Unit]
+Description=Volatile /var over the baked filesystem
+Documentation=man:systemd.mount(5)
+DefaultDependencies=no
+Requires=run-brenn-var.mount brenn-var-prepare.service
+After=run-brenn-var.mount brenn-var-prepare.service
+Conflicts=umount.target
+Before=umount.target local-fs.target
+
+[Mount]
+What=overlay
+Where=/var
+Type=overlay
+# The lower half is the /var the build produced, read-only inside the root
+# slot: the dpkg database, the /var/lib skeleton, and every directory a unit
+# expects are visible. Writes land in RAM and are gone at the next boot.
+Options=lowerdir=/usr/share/factory/var,upperdir=/run/brenn/var/upper,workdir=/run/brenn/var/work,nosuid,nodev

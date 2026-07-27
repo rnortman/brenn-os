@@ -1,0 +1,25 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-time
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Clock. The time client takes an optional local time server
+#  from the selected provisioning generation and otherwise uses the
+#  distribution's public pool.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: systemd-timesyncd,
+#  brenn-provisioning
+# METAEND
+---
+# The clock is a dependency of everything that uses TLS: a certificate cannot
+# be judged by a device that thinks it is 1970, and the device has no battery
+# to remember what time it was. So every unit that opens a TLS connection is
+# ordered after the clock is set, and the clock is set from the network.
+#
+# No time server is named in this image. Naming one would be site
+# configuration; leaving the setting unset means the distribution's public pool
+# is the fallback, and a provisioned drop-in — a local server, on a site that
+# runs one — takes precedence over the fallback by definition.
+#
+# The drop-in is a symlink into the published provisioning path, so it resolves
+# to whichever generation this boot selected, or to nothing at all.
+mmdebstrap:
+  packages: []

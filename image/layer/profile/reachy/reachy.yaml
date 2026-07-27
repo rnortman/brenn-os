@@ -1,0 +1,25 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-profile-reachy
+# X-Env-Layer-Category: profile
+# X-Env-Layer-Desc: Hardware configuration for the robot-base CM4 carrier:
+#  boot firmware config, kernel command line, device access rules.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: rpi-boot-firmware
+#
+# X-Env-VarPrefix: brennreachy
+#
+# X-Env-Var-assetdir: ${DIRECTORY}
+# X-Env-Var-assetdir-Desc: Directory holding this profile's boot assets.
+# X-Env-Var-assetdir-Required: n
+# X-Env-Var-assetdir-Valid: dir
+# X-Env-Var-assetdir-Set: y
+# METAEND
+---
+mmdebstrap:
+  # Overwrites the generic boot firmware from upstream layers. These must
+  # be the final /boot/firmware content: boot slots are populated from it.
+  customize-hooks:
+    - install -D -m 0644 "${IGconf_brennreachy_assetdir}/boot/config.txt"
+      "$1/boot/firmware/config.txt"
+    - install -D -m 0644 "${IGconf_brennreachy_assetdir}/boot/cmdline.txt"
+      "$1/boot/firmware/cmdline.txt"

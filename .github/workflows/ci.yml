@@ -20,7 +20,28 @@ jobs:
     name: check
     runs-on: ubuntu-latest
     steps:
+      # The builder submodule is fetched so the layer-metadata lint runs for
+      # real. `make check` skips that lint when the submodule is absent, which
+      # is a convenience on a fresh clone and must never be CI's path.
       - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # python3-debian: the builder's metadata linter parses deb822, and without
+      # it the lint skips — a skipping gate is a green result that checked
+      # nothing.
+      #
+      # rauc and squashfs-tools: the host lane packs and verifies an update
+      # bundle of a few kilobytes on every push, which is the only cheap place
+      # the signing path runs at all — the image lane's round trip is behind a
+      # half-hour build. This is the tool that packs a bundle, not the one that
+      # installs it: the version that matters on a device is pinned into the
+      # image.
+      - name: Install gate dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-debian rauc squashfs-tools
 
       # ubuntu-latest preinstalls shellcheck, but its version drifts with the
       # runner image, so a tree that lints clean on a developer's machine can go
@@ -44,11 +65,141 @@ jobs:
           "$RUNNER_TEMP/bin/shellcheck" --version | grep -qx "version: ${SHELLCHECK_VERSION}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # The host lane's cases that install a provisioning generation need uid
+      # 0, and take it from a user namespace rather than from the job. Without
+      # one they are not run and the lane says so — a gate quietly checking
+      # less than it reports. Asserted here so a runner policy that refuses
+      # unprivileged namespaces is a red job rather than a thinner one.
+      - name: Assert unprivileged user namespaces are available
+        run: unshare -r true
+
       # The gate's contents live in the root `check` target, not here, so the
       # whole thing is reproducible locally on a fresh clone. `check` skips the
       # lint when shellcheck is absent; the step above is what makes that
       # impossible here.
       - run: make check
+
+  # Whether there is anything for the image lane to do. Building an image takes
+  # tens of minutes on a runner, so a pull request that cannot affect one does
+  # not start a build; anything landing on the default branch does, because that
+  # is the tree releases are cut from.
+  image-scope:
+    name: image-scope
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+    steps:
+      # Full history: the decision is a diff against the base of the pull
+      # request, which a shallow clone does not contain. Only a pull request
+      # needs it — the step below answers a push without looking at the tree at
+      # all, and cloning the whole history to not read it gets slower with every
+      # commit that lands.
+      - if: github.event_name == 'pull_request'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - id: decide
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ]; then
+            echo "not a pull request — building"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Everything the build reads: the image sources, the scripts that
+          # drive it, the assertions made against it, the lanes themselves, and
+          # the builder's own pinned commit.
+          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" |
+            grep -E '^(image|scripts|tests|\.github)/|^(Makefile|rpi-image-gen|\.gitmodules)$' || true)
+          if [ -n "$changed" ]; then
+            echo "building — changed:"
+            printf '%s\n' "$changed" | sed 's/^/  /'
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "nothing the image build reads has changed"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Not a required status check until it has a record of being stable — a lane
+  # that blocks merges before it is trusted gets routed around, which is worse
+  # than not having it.
+  image:
+    name: image
+    needs: image-scope
+    if: needs.image-scope.outputs.build == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # The rootfs is assembled in an unprivileged user namespace that must be
+      # able to traverse into the runner's home directory.
+      - name: Install builder host dependencies
+        working-directory: rpi-image-gen
+        run: |
+          sudo apt-get update
+          sudo chmod o+x "$HOME"
+          sudo ./install_deps.sh
+
+      # The SBOM step fetches its own scanner at build time if the host has
+      # none, at whatever version its installer serves. Putting a pinned one on
+      # PATH first is what keeps the build's inputs pinned. The version is the
+      # one the builder would have fetched; a submodule bump that moves it is a
+      # failing host assertion rather than a silent drift.
+      - name: Install syft
+        env:
+          SYFT_VERSION: 1.44.0
+          SYFT_SHA256: 6f6cdcdc695721d91ce756e3b5bc3e3416599c464101f5e32e9c3f33054ee6d9
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o syft.tar.gz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_arm64.tar.gz"
+          echo "${SYFT_SHA256}  syft.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf syft.tar.gz -O syft > "$RUNNER_TEMP/bin/syft"
+          chmod +x "$RUNNER_TEMP/bin/syft"
+          "$RUNNER_TEMP/bin/syft" --version | grep -qw "${SYFT_VERSION}"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Install bundle tooling
+        run: sudo apt-get install -y --no-install-recommends rauc squashfs-tools
+
+      - name: Build the image
+        run: make image PROFILE=reachy
+
+      - name: Assert against the built image
+        run: make test-image PROFILE=reachy
+
+      # The update path, end to end, on the artefacts a release would ship. The
+      # signing pair is generated inside the run and dies with it: no key of any
+      # kind is stored, uploaded, or reachable from outside this job.
+      - name: Round-trip an update bundle
+        run: |
+          keydir=$(mktemp -d)
+          trap 'rm -rf "$keydir"' EXIT
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -subj "/CN=brenn-os ci throwaway" \
+            -keyout "$keydir/signing" -out "$keydir/anchor" 2>/dev/null
+          BRENN_BUNDLE_CERT="$keydir/anchor" \
+          BRENN_BUNDLE_KEY="$keydir/signing" \
+          BRENN_BUNDLE_KEYRING="$keydir/anchor" \
+            make bundle PROFILE=reachy
+          rauc info --keyring="$keydir/anchor" work/image-*/*.raucb
+
+      # The SBOM is the one artefact worth keeping: the images are gigabytes and
+      # the build is the source of truth for them, but what went into a build is
+      # worth being able to look up afterwards.
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reachy
+          path: work/image-*/*.sbom
+          if-no-files-found: error
 
   scrub:
     name: scrub

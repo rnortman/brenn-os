@@ -1,0 +1,29 @@
+[Unit]
+Description=Select this boot's provisioning generation
+
+# Ordered ahead of everything that reads site configuration, which is nearly
+# everything: the journal wants the provisioned machine id before it opens a
+# stream, the network stack wants credentials, sshd wants host keys. That puts
+# this before sysinit.target, which in turn means it cannot take the default
+# dependencies without ordering itself after the target it precedes.
+DefaultDependencies=no
+Requires=persistent.mount
+After=persistent.mount
+
+# network-pre.target is passive: the network stack orders itself after it but
+# nothing pulls it in, and an ordering against a unit that is not in the boot's
+# transaction is not an ordering at all. Wanting it is what makes the edge to
+# the network stack exist, and that edge is what keeps a lease from registering
+# the placeholder host name the image ships with.
+Wants=network-pre.target
+Before=sysinit.target systemd-journald.service network-pre.target sshd.service
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/brenn/brenn-config-select
+
+[Install]
+WantedBy=sysinit.target

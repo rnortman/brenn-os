@@ -1,0 +1,23 @@
+[Unit]
+Description=Commit the slot pair this boot is trying
+Documentation=man:rauc(1)
+
+# The commit is the whole rollback story: until it happens, the previous pair
+# is still what the firmware boots by default, and any reset returns to it.
+# Requiring the health gate rather than merely following it is deliberate — a
+# gate that was not reached must leave this unit unstarted, not run it anyway.
+Requires=brenn-healthy.target
+After=brenn-healthy.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Only a trial boot has anything to commit. On every ordinary boot this unit is
+# skipped before it runs, which is what keeps a healthy device from writing to
+# flash once per boot for no reason.
+ExecCondition=/usr/lib/brenn/brenn-tryboot-check
+ExecStart=/usr/bin/rauc status mark-good
+
+[Install]
+WantedBy=multi-user.target

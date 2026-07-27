@@ -1,0 +1,225 @@
+#!/bin/sh
+#
+# Obtain the application payload and make it the current one.
+#
+#   brenn-app-fetch [--once]
+#
+# Where it comes from is site configuration, so it arrives with the
+# provisioning generation: a URL, over TLS to a private trust anchor, and the
+# digest expected of what it returns. Nothing about the payload's content is
+# known here — it is a tar archive of a directory tree, and the only thing
+# asked of it is the entry point the contract requires, which the activate step
+# is what checks.
+#
+# It retries until it succeeds. That is deliberate and it is why the retry is a
+# loop in here rather than Restart= on the unit: the health gate waits on this
+# unit, and a unit that failed once would fail the gate's job with nothing to
+# re-run it when the server came back. On a trial boot the deadman timer ends
+# the wait by rebooting to what was working; on an ordinary boot nobody is
+# waiting, and the device converges on a payload whenever the network returns.
+#
+# `--once` makes a single attempt and reports. That is the interactive form —
+# an operator asking for a fresh payload wants an answer, not a program that
+# waits out the afternoon.
+
+set -eu
+
+link=${BRENN_PROVISIONING_LINK:-/run/brenn/provisioning}
+app_dir=${BRENN_APP_DIR:-/run/brenn-app}
+curl_cmd=${BRENN_APP_CURL:-curl}
+
+# Siblings are found beside this program, through whatever link the caller
+# reached it by. The link is resolved first because the documented way in is a
+# bare command over SSH, which arrives here as the path entry — a directory
+# holding links and none of the rest of the runner.
+here=$(dirname -- "$(readlink -f -- "$0")")
+
+activate=${BRENN_APP_ACTIVATE:-${here}/brenn-app-activate}
+
+# The provisioning contract, shared with the programs that write and check a
+# generation. Reading the fetch configuration with anything else is a device
+# that accepts what the bench refuses, so it is sourced rather than reimplemented
+# — the two programs are installed side by side, and the override is what lets
+# them be checked from the tree they are built out of.
+lib=${BRENN_CONFIG_LIB:-${here}/brenn-config-lib.sh}
+
+# The first wait and the ceiling it grows to, in seconds. Backing off matters
+# because the common failure is a server that is down for a while and a device
+# that would otherwise ask it several times a second for hours.
+retry_base=${BRENN_APP_RETRY_BASE:-5}
+retry_max=${BRENN_APP_RETRY_MAX:-300}
+
+# Every attempt has to end, or the retry above never happens: a connection that
+# is accepted and then stalls — a wedged server, a dropped NAT entry, a black
+# hole — is neither a success nor a failure, and the unit is deliberately
+# allowed to wait forever. So a transfer that stops moving is abandoned and
+# becomes the next attempt. The rate is low enough not to fail a slow link and
+# the window long enough not to trip on a server that pauses to think.
+connect_timeout=${BRENN_APP_CONNECT_TIMEOUT:-30}
+stall_bytes=${BRENN_APP_STALL_BYTES:-1024}
+stall_seconds=${BRENN_APP_STALL_SECONDS:-60}
+
+releases="${app_dir}/releases"
+conf="${link}/app/fetch.conf"
+ca="${link}/ca/brenn-ca.pem"
+
+# One writer at a time in the payload store. The boot-time retry, an operator's
+# resync and a tree pushed from a workstation can all be in flight at once, and
+# each of them ends by removing every release that is not the one it just made
+# current — interleaved, two of them delete each other's tree and leave nothing
+# running and nothing to say why.
+lock="${app_dir}/.lock"
+
+once=no
+case "${1:-}" in
+	--once) once=yes ;;
+	"") ;;
+	*)
+		echo "usage: $(basename -- "$0") [--once]" >&2
+		exit 2
+		;;
+esac
+
+die() {
+	echo "brenn-app-fetch: $*" >&2
+	exit 1
+}
+
+note() {
+	echo "brenn-app-fetch: $*" >&2
+}
+
+[ -r "$lib" ] || die "no provisioning contract library at ${lib}"
+# shellcheck source=../../../../provisioning.rootfs-overlay/usr/lib/brenn/brenn-config-lib.sh
+. "$lib"
+
+[ -r "$conf" ] || die "no fetch configuration at ${conf}"
+[ -r "$ca" ] || die "no trust anchor at ${ca}"
+[ -d "$releases" ] || die "no payload store at ${releases}"
+
+url=$(brenn_conf_value "$conf" URL)
+digest=$(brenn_conf_value "$conf" SHA256)
+
+[ -n "$url" ] || die "${conf} names no URL="
+
+# Refused here as well as at provisioning time, because this is the program that
+# would otherwise exec the result: transport says who served the payload, the
+# digest is the only thing that says what was served.
+[ -n "$digest" ] || die "${conf} names no SHA256="
+
+# Enforced here because this is where the connection is made: nothing this
+# device fetches may travel in the clear.
+case "$url" in
+	https://*) ;;
+	*) die "${conf} names a URL that is not https://" ;;
+esac
+
+# A name that sorts by when it was taken and cannot collide with a payload
+# pushed by hand, which uses its own prefix.
+release_id() {
+	id_stamp="fetch-$(date -u +%Y%m%dT%H%M%SZ)"
+	id_n=0
+	while [ -e "${releases}/${id_stamp}" ]; do
+		id_n=$((id_n + 1))
+		id_stamp="fetch-$(date -u +%Y%m%dT%H%M%SZ)-${id_n}"
+	done
+	printf '%s' "$id_stamp"
+}
+
+# One download, verified and unpacked, handed to the activate step. Anything
+# that goes wrong leaves nothing behind: a half-written archive or a partly
+# unpacked tree that survived would be indistinguishable from a payload.
+#
+# The store is capped RAM, so a download that this process is not around to
+# clean up after — killed mid-transfer, which is the case the unit's Restart=
+# exists for — has to be swept by the one that comes next, or a few of them
+# fill the mount and every later attempt fails for want of space.
+attempt_locked() {
+	dir="${releases}/$(release_id)"
+	tmp="${app_dir}/.download.$$"
+	rc=0
+
+	rm -rf -- "$tmp" "$dir"
+	rm -f -- "${app_dir}"/.download.*
+
+	# --proto and --proto-redir, not just the check on the configured URL
+	# above: curl follows a redirect into plaintext by default, and the hop
+	# that carries the payload is the one that has to be encrypted.
+	if ! "$curl_cmd" --fail --silent --show-error --location \
+		--proto '=https' --proto-redir '=https' \
+		--connect-timeout "$connect_timeout" \
+		--speed-limit "$stall_bytes" --speed-time "$stall_seconds" \
+		--cacert "$ca" --output "$tmp" -- "$url"; then
+		note "could not download ${url}"
+		rm -f -- "$tmp"
+		return 1
+	fi
+
+	# What makes the payload trustworthy beyond the transport. A server that has
+	# been made to serve something else fails here.
+	#
+	# TODO(app-payload-signing): a digest provisioned with the device answers
+	# for one payload. A signature would answer for every payload a publisher
+	# ever issues, without a configuration change per release.
+	computed=$(sha256sum <"$tmp" | cut -d' ' -f1)
+	if [ "$computed" != "$digest" ]; then
+		note "digest mismatch: expected ${digest}, got ${computed}"
+		rm -f -- "$tmp"
+		return 1
+	fi
+
+	# Created rather than reused: a name already taken is a second writer in a
+	# store that is supposed to have one, and unpacking into somebody else's
+	# tree is how two payloads become one that matches neither digest.
+	if ! mkdir -- "$dir"; then
+		note "could not make a release directory at ${dir}"
+		rm -f -- "$tmp"
+		return 1
+	fi
+
+	# Ownership comes from this side, not from whoever built the archive: the
+	# payload is read-only to the account that runs it.
+	if ! tar -xf "$tmp" -C "$dir" --no-same-owner --no-same-permissions; then
+		note "could not unpack the payload"
+		rm -rf -- "$tmp" "$dir"
+		return 1
+	fi
+	rm -f -- "$tmp"
+
+	"$activate" "$dir" || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		rm -rf -- "$dir"
+		return 1
+	fi
+
+	return 0
+}
+
+# The attempt, with the store to itself. BRENN_APP_LOCK_HELD is exported so the
+# activate step does not deadlock on a lock this process holds.
+attempt() (
+	exec 9>"$lock"
+	if ! flock 9; then
+		note "could not take the payload store lock at ${lock}"
+		return 1
+	fi
+	BRENN_APP_LOCK_HELD=yes
+	export BRENN_APP_LOCK_HELD
+	attempt_locked
+)
+
+trap 'rm -f -- "${app_dir}/.download.$$"' EXIT HUP INT TERM
+
+delay=$retry_base
+while :; do
+	if attempt; then
+		exit 0
+	fi
+	if [ "$once" = yes ]; then
+		die "the payload could not be obtained"
+	fi
+	note "retrying in ${delay}s"
+	sleep "$delay"
+	delay=$((delay * 2))
+	[ "$delay" -le "$retry_max" ] || delay=$retry_max
+done

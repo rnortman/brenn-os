@@ -1,0 +1,315 @@
+#!/bin/sh
+#
+# Boot-slot selection for RAUC, on top of the Raspberry Pi firmware's tryboot
+# mechanism.
+#
+# No released RAUC knows about tryboot, so slot selection is delegated to this
+# script. RAUC invokes it with one of:
+#
+#   get-primary                the bootname the firmware boots by default
+#   set-primary <bootname>     stage that pair, to be tried on the next boot
+#   get-state <bootname>       good | bad
+#   set-state <bootname> good  commit the pair that has just proved itself
+#   set-state <bootname> bad   refuse the pair
+#   get-current                the bootname this system booted from
+#
+# Underneath is autoboot.txt on the selector partition. It names the boot
+# partition for an ordinary boot and, separately, the boot partition for a boot
+# taken with the firmware's one-shot tryboot flag set. Staging writes the
+# candidate into the tryboot section and arms the flag; the firmware clears the
+# flag before handing over, so a panic, a hang the watchdog turns into a reset,
+# or a power cut lands back on the committed pair with nothing to undo.
+# Committing swaps the two values, and happens only after a candidate boot has
+# proved itself — so the one write that could corrupt the selector is never the
+# write a risky boot depends on.
+#
+# Nothing here names a partition number or a device node. The numbers handed to
+# the firmware are read from the GPT labels, and the slot this system booted
+# from is read from what the firmware itself reported. Both slots ship with
+# identical filesystem UUIDs, so those are the only answers that mean anything.
+#
+# Every path it touches is overridable, which is how the decision table is
+# exercised off the device.
+
+set -eu
+
+self=${0##*/}
+
+slot_dir=${BRENN_TRYBOOT_SLOT_DIR:-/dev/disk/by-partlabel}
+dt_dir=${BRENN_TRYBOOT_DT_DIR:-/proc/device-tree/chosen/bootloader}
+reboot_param=${BRENN_TRYBOOT_REBOOT_PARAM:-/run/systemd/reboot-param}
+state_dir=${BRENN_TRYBOOT_STATE_DIR:-/data/rauc}
+installing=${BRENN_RAUC_INSTALLING:-/run/brenn/rauc-installing}
+autoboot_override=${BRENN_TRYBOOT_AUTOBOOT:-}
+selector_label=${BRENN_TRYBOOT_SELECTOR_LABEL:-bootconfig}
+
+# The argument systemd passes to the firmware on the next reboot. The "0" is
+# the partition ("default"); the flag is what makes it a trial.
+tryboot_param='0 tryboot'
+
+die() {
+	echo "${self}: $*" >&2
+	exit 1
+}
+
+note() {
+	echo "${self}: $*" >&2
+}
+
+# --- the layout, read from labels ------------------------------------------
+
+canonical_bootname() {
+	case $1 in
+		A | a) printf 'A' ;;
+		B | b) printf 'B' ;;
+		*) die "unknown bootname '$1'" ;;
+	esac
+}
+
+label_for_bootname() {
+	case $1 in
+		A | a) printf 'boot_a' ;;
+		B | b) printf 'boot_b' ;;
+		*) die "unknown bootname '$1'" ;;
+	esac
+}
+
+other_bootname() {
+	case $1 in
+		A | a) printf 'B' ;;
+		B | b) printf 'A' ;;
+		*) die "unknown bootname '$1'" ;;
+	esac
+}
+
+# The partition number the firmware needs for a slot, derived from the GPT
+# label rather than assumed: the layout guarantees the labels, and only the
+# labels.
+partition_of_bootname() {
+	tb_label=$(label_for_bootname "$1")
+	tb_dev=$(readlink -f "${slot_dir}/${tb_label}") ||
+		die "no partition labelled ${tb_label}"
+	[ -e "$tb_dev" ] ||
+		die "no partition labelled ${tb_label}"
+	tb_number=$(printf '%s' "$tb_dev" | sed -n 's/.*[^0-9]\([0-9][0-9]*\)$/\1/p')
+	[ -n "$tb_number" ] ||
+		die "no partition number in ${tb_dev}"
+	printf '%s\n' "$tb_number"
+}
+
+bootname_of_partition() {
+	for tb_name in A B; do
+		if [ "$(partition_of_bootname "$tb_name")" = "$1" ]; then
+			printf '%s\n' "$tb_name"
+			return 0
+		fi
+	done
+	die "partition ${1} belongs to no slot"
+}
+
+# The slot this system is running from, as the firmware reported it when it
+# handed over. Not read from the kernel command line and not inferred from the
+# selector file: on a trial boot the selector file still names the pair being
+# replaced, and the command line is one template shared by both slots.
+booted_bootname() {
+	tb_booted=$(od -An -tu4 --endian=big -N4 "${dt_dir}/partition" 2>/dev/null) ||
+		die "the firmware reported no boot partition"
+	tb_booted=$(printf '%s' "$tb_booted" | tr -d '[:space:]')
+	[ -n "$tb_booted" ] || die "the firmware reported no boot partition"
+	bootname_of_partition "$tb_booted"
+}
+
+# --- the selector file ------------------------------------------------------
+
+autoboot_path=""
+mount_point=""
+
+# The selector partition is deliberately absent from fstab: it is mounted for
+# as long as one verb takes and no longer, so that the file the firmware reads
+# to find a bootable system is not sitting writable through the life of the
+# system.
+open_autoboot() {
+	if [ -n "$autoboot_override" ]; then
+		autoboot_path=$autoboot_override
+		return
+	fi
+	tb_selector=$(readlink -f "${slot_dir}/${selector_label}") ||
+		die "no partition labelled ${selector_label}"
+	mount_point=$(mktemp -d) || die "no temporary directory"
+	if ! mount -t vfat -o "$1",noatime "$tb_selector" "$mount_point"; then
+		rmdir "$mount_point" || true
+		mount_point=""
+		die "cannot mount ${tb_selector} ${1}"
+	fi
+	autoboot_path="${mount_point}/autoboot.txt"
+}
+
+close_autoboot() {
+	[ -n "$mount_point" ] || return 0
+	umount "$mount_point" || note "cannot unmount ${mount_point}"
+	rmdir "$mount_point" || true
+	mount_point=""
+}
+
+trap close_autoboot EXIT INT TERM
+
+# The boot partition named by one section of the selector file. It is a
+# config.txt-style file: a filter line opens a section, and the firmware reads
+# the last assignment within the section that applies to the boot it is doing.
+section_partition() {
+	awk -v want="$2" '
+		/^[[:space:]]*\[/ { sub(/[[:space:]]+$/, ""); sub(/^[[:space:]]+/, ""); section = $0; next }
+		{ sub(/#.*/, "") }
+		section == want && /^[[:space:]]*boot_partition[[:space:]]*=/ {
+			sub(/^[^=]*=/, "")
+			gsub(/[[:space:]]/, "")
+			value = $0
+		}
+		END { if (value != "") print value }
+	' "$1"
+}
+
+committed_partition() {
+	tb_value=$(section_partition "$autoboot_path" '[all]')
+	[ -n "$tb_value" ] || die "no committed boot_partition in ${autoboot_path}"
+	printf '%s' "$tb_value"
+}
+
+# One write of one sector, flushed. The file has a 512-byte budget and this is
+# well inside it; the layout is fixed and the values are the same width every
+# time, so the rewrite neither grows nor shrinks the file. There is no
+# documented atomicity guarantee for a FAT rewrite, which is why this only ever
+# runs after a boot has already succeeded.
+write_autoboot() {
+	printf '[all]\ntryboot_a_b=1\nboot_partition=%s\n[tryboot]\nboot_partition=%s\n' \
+		"$1" "$2" >"$autoboot_path"
+	sync "$autoboot_path" 2>/dev/null || sync || true
+}
+
+# --- the one-shot flag ------------------------------------------------------
+
+# systemd passes the contents of this file to the firmware as the reboot
+# argument, which is how the flag gets armed without a mailbox call. It lives
+# in RAM: a power cut between staging and the reboot loses the arming and the
+# device comes up on the committed pair, which is the safe direction.
+arm_tryboot() {
+	mkdir -p "$(dirname "$reboot_param")"
+	printf '%s\n' "$tryboot_param" >"$reboot_param"
+}
+
+# Once a decision has been committed there must be no armed flag left over: it
+# would turn the next ordinary reboot into a trial of whatever is staged.
+disarm_tryboot() {
+	[ -f "$reboot_param" ] || return 0
+	case "$(cat "$reboot_param")" in
+		"$tryboot_param") rm -f "$reboot_param" ;;
+	esac
+}
+
+# --- slot state -------------------------------------------------------------
+
+# tryboot keeps no per-slot record and no boot counters, so a slot is good
+# unless something refused it. The refusals live beside RAUC's own status file
+# on the writable partition, which is the only thing on this device that is
+# already written when a slot changes state.
+state_marker() {
+	printf '%s/bad-%s' "$state_dir" "$1"
+}
+
+# --- verbs ------------------------------------------------------------------
+
+case "${1:-}" in
+	get-primary)
+		[ $# -eq 1 ] || die "usage: ${self} get-primary"
+		open_autoboot ro
+		bootname_of_partition "$(committed_partition)"
+		;;
+
+	set-primary)
+		[ $# -eq 2 ] || die "usage: ${self} set-primary <bootname>"
+		tb_candidate=$(partition_of_bootname "$2")
+		open_autoboot rw
+		tb_primary=$(committed_partition)
+		if [ "$tb_candidate" = "$tb_primary" ]; then
+			note "slot ${2} is already the committed one; staging it anyway"
+		fi
+		write_autoboot "$tb_primary" "$tb_candidate"
+		close_autoboot
+		arm_tryboot
+		# Staging is the end of the install, and the armed flag is from here
+		# on what says an update is in flight. The record the pre-install
+		# check wrote has done its job and would otherwise refuse every
+		# configuration change until the next boot.
+		rm -f "$installing"
+		;;
+
+	get-state)
+		[ $# -eq 2 ] || die "usage: ${self} get-state <bootname>"
+		label_for_bootname "$2" >/dev/null
+		if [ -e "$(state_marker "$2")" ]; then
+			echo bad
+		else
+			echo good
+		fi
+		;;
+
+	set-state)
+		[ $# -eq 3 ] || die "usage: ${self} set-state <bootname> <good|bad>"
+		tb_slot=$(partition_of_bootname "$2")
+		tb_other=$(partition_of_bootname "$(other_bootname "$2")")
+		case "$3" in
+			good)
+				# Good means "this pair has just proved itself", so it is
+				# also the commit — and only the pair actually running can
+				# have proved anything. Declaring the other pair good is
+				# therefore no more than withdrawing an earlier refusal: an
+				# untried pair does not become the default without a trial,
+				# and an install (which marks its target good and bad as it
+				# goes) cannot commit anything by itself.
+				rm -f "$(state_marker "$2")"
+				# Read before the comparison, not inside it. A substitution
+				# that fails inside an `if` condition is not fatal, and its
+				# empty output would read as "some other slot is running" —
+				# so a firmware that reported nothing would turn a commit
+				# into a success that committed nothing, and the deadman
+				# would quietly roll the update back ten minutes later.
+				tb_running=$(booted_bootname)
+				if [ "$tb_running" != "$(canonical_bootname "$2")" ]; then
+					note "slot ${2} is not the running one; nothing to commit"
+					exit 0
+				fi
+				open_autoboot rw
+				if [ "$(committed_partition)" != "$tb_slot" ]; then
+					write_autoboot "$tb_slot" "$tb_other"
+					note "committed slot ${2}"
+				fi
+				close_autoboot
+				disarm_tryboot
+				;;
+			bad)
+				mkdir -p "$state_dir"
+				: >"$(state_marker "$2")"
+				sync "$state_dir" 2>/dev/null || sync || true
+				open_autoboot rw
+				if [ "$(committed_partition)" = "$tb_slot" ]; then
+					write_autoboot "$tb_other" "$tb_slot"
+					note "slot ${2} refused; the other slot is now the committed one"
+				fi
+				close_autoboot
+				disarm_tryboot
+				;;
+			*)
+				die "unknown state '${3}'"
+				;;
+		esac
+		;;
+
+	get-current)
+		[ $# -eq 1 ] || die "usage: ${self} get-current"
+		booted_bootname
+		;;
+
+	*)
+		die "usage: ${self} get-primary | set-primary <bootname> | get-state <bootname> | set-state <bootname> <good|bad> | get-current"
+		;;
+esac

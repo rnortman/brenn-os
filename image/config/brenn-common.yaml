@@ -1,0 +1,57 @@
+# Settings every brenn-os profile shares. A profile config includes this file
+# and then declares only what varies between profiles: hardware, package
+# payload, partition sizes, journal policy.
+#
+# The invariants are not per-profile, so they live here: A/B immutable root,
+# one writable partition, no first-boot resize.
+
+env:
+  # The Debian snapshot the root filesystem is built from. The builder derives
+  # the snapshot.debian.org timestamp from this, so fixing it is what makes a
+  # rebuild of an old commit produce the same base system. Bump deliberately.
+  SOURCE_DATE_EPOCH: 1784505600
+
+image:
+  # GPT A/B layout: bootconfig + boot_a + boot_b + system_a + system_b +
+  # persistent, tryboot selecting a boot/system pair at partition granularity.
+  layer: image-rota
+
+  # Read-only ext4 root. TODO(erofs-root): erofs is a one-word change here and
+  # is the step the dm-verity work starts from.
+  rootfs_type: ext4
+
+device:
+  # The baked account set. `app` is the unprivileged account the application
+  # payload runs as, and the only non-system account on the device; there is
+  # no interactive login for it and no sudo anywhere.
+  #
+  # The ids are pinned rather than allocated so that ownership of files on the
+  # persistent partition means the same thing after an update, after a slot
+  # flip, and after a reflash. 2000 is clear of both the range Debian hands
+  # out to system accounts and the conventional first-user id.
+  user1: app
+  user1uid: 2000
+  user1gid: 2000
+
+  # Access to the carrier's hardware is by group, granted here and enforced by
+  # the udev rules that own the device nodes.
+  user1groups: audio,video,input,dialout,i2c,spi,gpio,render,plugdev
+
+  # No sudo, in any form. Anything needing privilege belongs in the image,
+  # where it is signed and reversible, not in a payload pulled over the
+  # network. The builder purges the sudo package outright at this setting.
+  user1sudo: none
+
+layer:
+  base: brenn-base
+  pin: brenn-rpi-archive-pin
+  state: brenn-state
+  users: brenn-users
+  provisioning: brenn-provisioning
+  net: brenn-net
+  time: brenn-time
+  ssh: brenn-ssh
+  logging: brenn-logging
+  health: brenn-health
+  rauc: brenn-rauc
+  app: brenn-app

@@ -1,0 +1,30 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-net
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Network stack. Wired and wireless links under networkd,
+#  with the wireless credentials and the regulatory domain coming from the
+#  selected provisioning generation rather than from the image.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: systemd-net-min,
+#  brenn-provisioning
+# METAEND
+---
+# Two links, both DHCP, neither of them individually required: the carrier
+# lives on wireless in the field and on a cable at a bench, and reaching the
+# network at all is what the rest of the system waits for.
+#
+# Nothing here knows a network name, a passphrase or a country. All of that is
+# in the wireless supplicant's configuration file, which is provisioned, so
+# this layer contributes the wiring and none of the values.
+#
+# The regulatory database is installed but no default domain is set: the
+# regulatory domain is a property of where a device is, which makes it site
+# configuration, and it is carried by `country=` in the provisioned supplicant
+# configuration.
+#
+# The link files in the overlay must replace the device layer's generated
+# defaults; overlay-after-hooks ordering is what makes that work.
+mmdebstrap:
+  packages:
+    - wpasupplicant
+    - wireless-regdb

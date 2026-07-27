@@ -1,0 +1,87 @@
+#!/bin/sh
+#
+# Put a generation in place, as the device requires it.
+#
+#   brenn-config-install <candidate-dir> <destination>
+#
+# Two tools install generations: the flash-time one, which puts the first
+# generation on a partition from a workstation, and the on-device one, which
+# installs every change after it. What lands has to be the same either way —
+# same ownership, same modes, same last check against the rules — or a device's
+# configuration would depend on which door it came in through.
+#
+# The copy is built beside its destination and moved onto it, so an interrupted
+# run leaves a staging directory nothing selects rather than half a generation
+# something does. A copy that fails the check is left where it is: it is
+# evidence, and nothing selects it.
+
+set -eu
+
+lib=${BRENN_CONFIG_LIB:-$(dirname -- "$(readlink -f -- "$0")")/brenn-config-lib.sh}
+# shellcheck source=brenn-config-lib.sh
+. "$lib"
+
+# The checker beside this program, so that a tree running an in-tree copy of
+# one runs the matching copy of the other.
+validate=${BRENN_CONFIG_VALIDATE:-$(dirname -- "$(readlink -f -- "$0")")/brenn-config-validate}
+
+die() {
+	echo "brenn-config-install: $*" >&2
+	exit 1
+}
+
+[ $# -eq 2 ] || {
+	echo "usage: brenn-config-install <candidate-dir> <destination>" >&2
+	exit 2
+}
+
+candidate=$1
+dest=$2
+staging="${dest}.new"
+
+[ -d "$candidate" ] || die "no such directory: ${candidate}"
+[ -x "$validate" ] || die "the contract checker is missing: ${validate}"
+[ ! -e "$dest" ] || die "${dest} already exists; inspect and remove it"
+[ "$(id -u)" -eq 0 ] || die "installing a generation needs root (the files belong to root)"
+
+rm -rf "$staging"
+cp -a "${candidate}/." "$staging"
+
+# Shut the staging directory before anything inside it is opened up. The pass
+# below sets every file readable and only then closes the secrets again, and
+# for that moment a host key and a set of wireless credentials would be
+# readable by anyone who can reach this path — which on the device includes the
+# account that runs a payload delivered over the network. Nobody but root gets
+# to walk in until the modes are finished.
+chmod 0700 "$staging"
+
+# Ownership and modes are set here rather than carried over, so that what lands
+# on the device is what the device requires whatever the working copy was. The
+# check is still what catches an exposed private key: one that arrived
+# world-readable has already been read by whoever could.
+chown -R 0:0 "$staging"
+find "$staging" -mindepth 1 -type d -exec chmod 0755 {} +
+find "$staging" -type f -exec chmod 0644 {} +
+
+# Which files are secret is the contract's to say, not this program's. A
+# generation that grows one gets it closed here by having been declared there.
+for entry in $BRENN_CONTRACT_REQUIRED $BRENN_CONTRACT_OPTIONAL; do
+	[ "${entry##*:}" = secret ] || continue
+	path="${staging}/${entry%:*}"
+	[ -f "$path" ] || continue
+	chmod 0600 "$path"
+done
+
+# The same rules against what was actually written, this time including the
+# ownership that only exists once installed. A post-condition rather than a
+# repetition: copying and chmod both have failure modes that leave a directory
+# looking right from the outside.
+"$validate" --installed "$staging" ||
+	die "the installed copy does not satisfy the contract; ${staging} left in place"
+
+# Every secret is closed, so the door can open: the services that read a
+# generation — sshd, the log upload, the application — are not all root, and
+# they reach their files through this directory.
+chmod 0755 "$staging"
+
+mv -T "$staging" "$dest"

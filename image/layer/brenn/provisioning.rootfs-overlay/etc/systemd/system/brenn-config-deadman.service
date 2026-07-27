@@ -1,0 +1,8 @@
+[Unit]
+Description=Give up on a configuration candidate that never committed
+
+ConditionPathExists=/run/brenn/config-trial
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/brenn/brenn-config-deadman

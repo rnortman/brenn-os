@@ -1,0 +1,30 @@
+# Profile: reachy — Raspberry Pi CM4 on the robot-base carrier, eMMC.
+
+include:
+  file: brenn-common.yaml
+
+device:
+  layer: rpi-cm4
+  storage_type: emmc
+
+  # Placeholder only. The running hostname comes from provisioning; nothing
+  # unit-specific is baked into an image.
+  hostname: brenn-os
+
+image:
+  name: brenn-os-reachy
+
+  # Arithmetic, in MiB, with the 8 MiB partition alignment the layout uses.
+  # Starting at 8 and rounding each start up to a multiple of 8:
+  #   8 -> 40 -> 296 -> 552 -> 3624 -> 6696 -> ends at 14376.
+  # The smallest medium this profile may assume is 14.5 GiB (14848 MiB), so
+  # roughly 470 MiB stays unallocated. tests/image asserts this still holds.
+  #
+  # The system slots are sized for a future image that carries its application
+  # payload, not for today's package set.
+  boot_part_size: 256M
+  system_part_size: 3G
+  data_part_size: 7680M
+
+layer:
+  profile: brenn-profile-reachy

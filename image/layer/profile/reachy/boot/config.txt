@@ -1,0 +1,36 @@
+[cm4]
+# Host mode on the 2711 built-in XHCI USB controller. The carrier's USB audio
+# and the 4-mic array hang off it.
+otg_mode=1
+
+[all]
+arm_64bit=1
+auto_initramfs=1
+arm_boost=1
+
+# KMS display stack. The firmware does not pre-seed a video= argument; the
+# kernel default is used instead.
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+disable_fw_kms_setup=1
+
+# UART3 is the servo control bus. enable_uart also holds the core clock steady,
+# which the serial console depends on.
+dtoverlay=uart3
+enable_uart=1
+
+# The carrier routes the WiFi antenna to the external connector.
+dtparam=ant2
+
+# Fan controller on the VideoCore i2c bus. midtemp is the temperature the fan
+# ramps at; 45C matches the behaviour observed on a working unit and errs
+# toward cooling early.
+dtparam=i2c_vc=on
+dtoverlay=i2c-fan,emc2301,i2c_csi_dsi,midtemp=45000,maxtemp=65000
+
+# Both head cameras, explicitly declared rather than probed.
+dtoverlay=imx708,rotation=0,cam1
+dtoverlay=imx708,rotation=0,cam0
+
+# IMU on i2c4.
+dtoverlay=i2c4,pins_8_9=1

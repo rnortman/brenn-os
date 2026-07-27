@@ -1,0 +1,288 @@
+#!/bin/sh
+#
+# Check a provisioning generation against the contract.
+#
+#   brenn-config-validate [--installed] <generation-dir>
+#
+# A generation is the whole of a unit's site configuration — credentials, keys,
+# identity, endpoints — and it is delivered as a directory rather than as edits,
+# so that installing one is a single transaction. This is the gate that
+# transaction passes through, both at flash time and for every change made
+# afterwards over the network: one set of rules, one implementation, so that a
+# generation which installs on a workstation is one the device will accept.
+#
+# What it refuses is what strands a device or exposes it: a missing file that
+# leaves it with no way onto the network, a private key anyone can read, a
+# collector address in plaintext, a trust anchor that is not a certificate. It
+# does not attempt to know whether the credentials are the *right* ones; that
+# is what trialling a generation is for.
+#
+# --installed additionally requires everything to be owned by root, which is
+# true of a generation on the writable partition and not of one sitting in an
+# operator's working directory.
+#
+# Exits 0 if the generation is usable, 1 if it is not, listing every problem
+# rather than the first: a provisioning round trip is slow and a directory with
+# three mistakes in it should take one run to find out about, not three.
+
+set -eu
+
+lib=${BRENN_CONFIG_LIB:-$(dirname -- "$(readlink -f -- "$0")")/brenn-config-lib.sh}
+# shellcheck source=brenn-config-lib.sh
+. "$lib"
+
+# Where the generation is published once selected. The collector's trust anchor
+# has to be named through that path, because the file that names it is read by a
+# service on a running device, not here.
+link=${BRENN_PROVISIONING_LINK:-/run/brenn/provisioning}
+
+installed=0
+gen=""
+
+usage() {
+	echo "usage: brenn-config-validate [--installed] <generation-dir>" >&2
+}
+
+while [ $# -gt 0 ]; do
+	case $1 in
+		--installed) installed=1 ;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		-*)
+			usage
+			exit 2
+			;;
+		*)
+			if [ -n "$gen" ]; then
+				usage
+				exit 2
+			fi
+			gen=$1
+			;;
+	esac
+	shift
+done
+
+if [ -z "$gen" ]; then
+	usage
+	exit 2
+fi
+
+rc=0
+
+problem() {
+	echo "brenn-config-validate: $*" >&2
+	rc=1
+}
+
+if [ ! -d "$gen" ]; then
+	problem "${gen} is not a directory"
+	exit 1
+fi
+
+# The contract itself is shared with the programs that write a generation, so
+# that a file added to it is required, moded and checked by having been named
+# once.
+REQUIRED=$BRENN_CONTRACT_REQUIRED
+OPTIONAL=$BRENN_CONTRACT_OPTIONAL
+DIRECTORIES=$BRENN_CONTRACT_DIRECTORIES
+
+mode_of() {
+	stat -c '%a' "$1"
+}
+
+owner_of() {
+	stat -c '%u:%g' "$1"
+}
+
+# Permissions are checked as bits rather than against the exact modes the
+# schema tabulates, so that a stricter generation — a host key at 0400 — is
+# accepted while an exposed one is not. What matters: no secret is readable
+# beyond its owner, nothing is writable by anyone else, and nothing here is a
+# program.
+check_mode() {
+	path=$1
+	class=$2
+	mode=$(mode_of "$path")
+	case $class in
+		secret)
+			[ $((0$mode & 0177)) -eq 0 ] ||
+				problem "${path} is mode ${mode}: a secret is readable by group or other"
+			;;
+		public)
+			[ $((0$mode & 0133)) -eq 0 ] ||
+				problem "${path} is mode ${mode}: writable by group or other, or executable"
+			;;
+		dir)
+			[ $((0$mode & 0022)) -eq 0 ] ||
+				problem "${path} is mode ${mode}: a directory writable by group or other"
+			;;
+	esac
+
+	if [ "$installed" -eq 1 ]; then
+		owner=$(owner_of "$path")
+		[ "$owner" = "0:0" ] ||
+			problem "${path} is owned by ${owner}: an installed generation belongs to root"
+	fi
+}
+
+# sshd walks the resolved path of the access list and refuses to read one that
+# anybody else could have replaced, so the generation root is held to the same
+# rule as the directories inside it.
+check_mode "$gen" dir
+
+for dir in $DIRECTORIES; do
+	[ -d "${gen}/${dir}" ] || continue
+	check_mode "${gen}/${dir}" dir
+done
+
+for entry in $REQUIRED; do
+	path="${gen}/${entry%:*}"
+	if [ -f "$path" ]; then
+		check_mode "$path" "${entry##*:}"
+	else
+		problem "${entry%:*} is missing"
+	fi
+done
+
+for entry in $OPTIONAL; do
+	path="${gen}/${entry%:*}"
+	[ -f "$path" ] || continue
+	check_mode "$path" "${entry##*:}"
+done
+
+# Everything else the directory contains. An entry nobody expects is refused
+# rather than ignored: a working copy of a private key, an editor's backup file,
+# a second host key left from another device — none of them are covered by the
+# permission rules above, and all of them are the sort of thing that reaches a
+# device once and stays there.
+#
+# The sweep runs in a subshell, so it reports by printing the entries it
+# objects to; the verdict is reached once, out here.
+known="
+$REQUIRED
+$OPTIONAL
+"
+strangers=$(
+	find "$gen" -mindepth 1 | while read -r path; do
+		rel=${path#"$gen"/}
+		if [ -h "$path" ]; then
+			echo "${rel} (a link; a generation is self-contained)"
+		elif [ -d "$path" ]; then
+			case " $DIRECTORIES " in
+				*" $rel "*) ;;
+				*) echo "${rel}/" ;;
+			esac
+		elif [ -f "$path" ]; then
+			case $known in
+				*"
+${rel}:"*) ;;
+				*) echo "$rel" ;;
+			esac
+		else
+			echo "${rel} (not a regular file)"
+		fi
+	done
+)
+[ -z "$strangers" ] ||
+	problem "not part of a generation: $(printf '%s' "$strangers" | tr '\n' ' ')"
+
+# Formats. Each check is skipped if its file is absent, because a missing file
+# has already been reported and reporting it twice tells nobody anything.
+have() {
+	[ -f "${gen}/$1" ]
+}
+
+if have hostname; then
+	name=$(brenn_first_line "${gen}/hostname")
+	printf '%s' "$name" | grep -Eq "$BRENN_RE_HOSTNAME" ||
+		problem "hostname is not a single DNS label: ${name}"
+fi
+
+if have machine-id; then
+	id=$(brenn_first_line "${gen}/machine-id")
+	printf '%s' "$id" | grep -Eq "$BRENN_RE_MACHINE_ID" ||
+		problem "machine-id is not 32 hex digits"
+fi
+
+if have net/wpa_supplicant-wlan0.conf; then
+	wpa="${gen}/net/wpa_supplicant-wlan0.conf"
+	# The regulatory domain is site configuration and the image bakes none, so a
+	# supplicant configuration without a country is a radio with no channels it
+	# is allowed to use.
+	grep -Eq '^[[:space:]]*country=[A-Z]{2}[[:space:]]*$' "$wpa" ||
+		problem "net/wpa_supplicant-wlan0.conf names no country= (two upper-case letters)"
+	grep -q 'network[[:space:]]*=[[:space:]]*{' "$wpa" ||
+		problem "net/wpa_supplicant-wlan0.conf declares no network"
+fi
+
+if have net/ntp.conf; then
+	ntp="${gen}/net/ntp.conf"
+	grep -q '^\[Time\]' "$ntp" ||
+		problem "net/ntp.conf has no [Time] section, so timesyncd will ignore it"
+	grep -Eq '^[[:space:]]*NTP=[^[:space:]]' "$ntp" ||
+		problem "net/ntp.conf names no NTP= server"
+fi
+
+if have ssh/ssh_host_ed25519_key; then
+	grep -q 'BEGIN OPENSSH PRIVATE KEY' "${gen}/ssh/ssh_host_ed25519_key" ||
+		problem "ssh/ssh_host_ed25519_key is not an OpenSSH private key"
+fi
+
+if have ssh/ssh_host_ed25519_key.pub; then
+	grep -q '^ssh-ed25519 ' "${gen}/ssh/ssh_host_ed25519_key.pub" ||
+		problem "ssh/ssh_host_ed25519_key.pub is not an ed25519 public key"
+fi
+
+if have ssh/authorized_keys; then
+	# There is no password authentication anywhere, so an access list with no
+	# key in it is a device nobody can log into.
+	# Comments and blank lines first, then a key type anywhere in what is left:
+	# a line may begin with options (`restrict,from=…`) before the type.
+	keys=$(grep -Ev '^[[:space:]]*(#|$)' "${gen}/ssh/authorized_keys" |
+		grep -cE '(^|[[:space:]])(ssh-|ecdsa-|sk-)' || true)
+	[ "$keys" -gt 0 ] ||
+		problem "ssh/authorized_keys admits nobody"
+fi
+
+for pem in ca/brenn-ca.pem rauc/keyring.pem; do
+	have "$pem" || continue
+	grep -q 'BEGIN CERTIFICATE' "${gen}/${pem}" ||
+		problem "${pem} is not a PEM certificate"
+done
+
+if have journal/upload.conf; then
+	up="${gen}/journal/upload.conf"
+	grep -q '^\[Upload\]' "$up" ||
+		problem "journal/upload.conf has no [Upload] section"
+	grep -Eq '^[[:space:]]*URL=https://' "$up" ||
+		problem "journal/upload.conf has no https:// URL= (there is no plaintext option)"
+	# The collector's certificate is signed by the private anchor this same
+	# generation carries; naming any other file leaves the upload trusting the
+	# distribution's store, which has never heard of it.
+	anchor=$(sed -n 's/^[[:space:]]*TrustedCertificateFile=//p' "$up" | tr -d '[:space:]')
+	[ "$anchor" = "${link}/ca/brenn-ca.pem" ] ||
+		problem "journal/upload.conf must trust ${link}/ca/brenn-ca.pem, not '${anchor}'"
+fi
+
+if have app/fetch.conf; then
+	fetch="${gen}/app/fetch.conf"
+	# Read exactly the way the device reads it, so that a file accepted here is
+	# a file the runner resolves to the same URL and the same digest.
+	url=$(brenn_conf_value "$fetch" URL)
+	case $url in
+		https://*) ;;
+		*) problem "app/fetch.conf has no https:// URL= (there is no plaintext option)" ;;
+	esac
+	# The digest is what answers for the payload once it has arrived: the
+	# transport says who served it, not what was served. Without one, a
+	# generation would have the device unpack and exec whatever came back, so a
+	# missing digest is refused exactly like a malformed one.
+	digest=$(brenn_conf_value "$fetch" SHA256)
+	printf '%s' "$digest" | grep -Eq '^[0-9a-f]{64}$' ||
+		problem "app/fetch.conf names no SHA256= of 64 hex digits"
+fi
+
+exit "$rc"

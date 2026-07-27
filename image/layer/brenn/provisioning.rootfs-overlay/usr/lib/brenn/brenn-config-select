@@ -1,0 +1,182 @@
+#!/bin/sh
+#
+# Choose the provisioning generation for this boot and publish it.
+#
+# Site configuration lives on the writable partition as numbered generations.
+# One is committed (`active`); a candidate may be under trial (`trial`), and a
+# trial gets exactly one boot to prove itself. This script makes that choice
+# and publishes the winner at a stable path, so every consumer names one path
+# and none of them reach into the writable partition.
+#
+# One-shot semantics without help from the firmware: the boot that takes up a
+# trial records a marker first. Finding the marker already set means an earlier
+# trial boot ended without committing — a crash, a power cut, or the deadman
+# reboot — so the candidate is discarded and the committed generation runs.
+# A configuration mistake therefore costs one boot, not a service call. The
+# record is meaningful only while a candidate is present: one found on its own
+# is cleared, so that a committed trial cannot make the next candidate look
+# like a failed one.
+#
+# Missing or unusable provisioning is reported and does not stop the boot: the
+# unit comes up with its consumers conditioned off, reachable over the serial
+# console. Paths are overridable so the decision can be exercised off-device.
+
+set -eu
+
+lib=${BRENN_CONFIG_LIB:-$(dirname -- "$(readlink -f -- "$0")")/brenn-config-lib.sh}
+# shellcheck source=brenn-config-lib.sh
+. "$lib"
+
+prov_root=${BRENN_PROVISIONING_ROOT:-/data/provisioning}
+link=${BRENN_PROVISIONING_LINK:-/run/brenn/provisioning}
+trial_flag=${BRENN_CONFIG_TRIAL_FLAG:-/run/brenn/config-trial}
+machine_id_file=${BRENN_MACHINE_ID_FILE:-/run/machine-id}
+hostname_file=${BRENN_HOSTNAME_FILE:-/proc/sys/kernel/hostname}
+
+active="${prov_root}/active"
+trial="${prov_root}/trial"
+marker="${prov_root}/trial-attempted"
+
+# Anything unexpected leaves the unit failed — visible in the journal and in
+# `systemctl status` — after doing as much as it usefully can.
+rc=0
+
+warn() {
+	echo "brenn-config-select: $*" >&2
+	rc=1
+}
+
+note() {
+	echo "brenn-config-select: $*"
+}
+
+# Discarding has to cope with whatever the detection below admits, including an
+# entry that is a directory rather than the expected link — a provisioning tool
+# interrupted mid-install leaves one. A removal that failed here would abort
+# the script with nothing published, which is the unprovisioned boot this whole
+# mechanism exists to keep unreachable.
+#
+# The attempt record goes only once the candidate is gone, so a discard that
+# could not finish leaves the next boot refusing the same candidate rather than
+# taking it up as a fresh one.
+discard_trial() {
+	if ! rm -rf "$trial"; then
+		warn "the candidate could not be removed; it stays refused"
+		return
+	fi
+	rm -f "$marker"
+	brenn_flush "$prov_root"
+}
+
+selected=""
+trialling=""
+
+if [ -L "$trial" ] || [ -e "$trial" ]; then
+	if [ -e "$marker" ]; then
+		warn "an earlier trial boot did not commit; discarding the candidate"
+		discard_trial
+	# The write happens in a subshell: a redirection that fails on a special
+	# built-in ends a POSIX shell outright, condition or no condition, and
+	# ending here would publish nothing.
+	elif (: >"$marker") 2>/dev/null; then
+		brenn_flush "$marker" "$prov_root"
+		selected=$trial
+		trialling=yes
+		note "trying a candidate generation"
+	else
+		# A full or read-only partition, most likely. One-shot semantics rest
+		# entirely on the record, so a candidate whose attempt cannot be
+		# recorded is one that would be tried on every boot from now on: refuse
+		# it instead, leave it in place for a later boot, and run the committed
+		# generation. Aborting here would publish nothing at all, which is the
+		# unreachable boot this whole mechanism exists to prevent.
+		warn "the attempt could not be recorded; the candidate is not being tried"
+	fi
+elif [ -e "$marker" ]; then
+	# A record with no candidate is what a commit leaves behind, and what a
+	# discard leaves if the power went between removing the candidate and
+	# removing the record. It says nothing on its own, and keeping it would make
+	# the *next* candidate look like one that had already been tried — so every
+	# future configuration change would revert on its first boot.
+	note "clearing an attempt record left with no candidate"
+	rm -f "$marker" || warn "the stale attempt record could not be removed"
+	brenn_flush "$prov_root"
+fi
+
+if [ -n "$selected" ] && [ ! -d "$selected" ]; then
+	warn "the candidate generation does not resolve to a directory; discarding it"
+	discard_trial
+	selected=""
+	trialling=""
+fi
+
+if [ -z "$selected" ]; then
+	if [ -d "$active" ]; then
+		selected=$active
+	else
+		warn "no committed generation at ${active}: this unit is unprovisioned"
+		exit 1
+	fi
+fi
+
+# Publish the generation directory itself rather than the `active`/`trial`
+# link, so that committing or discarding one during this boot cannot change
+# what a service started earlier is reading.
+target=$(readlink -f "$selected")
+
+mkdir -p "$(dirname "$link")"
+rm -f "${link}.new"
+ln -s "$target" "${link}.new"
+mv -T "${link}.new" "$link"
+note "using ${target}"
+
+# Say whether this boot is running a candidate. The two units that only make
+# sense on such a boot — the one that commits the candidate once the device is
+# healthy, and the timer that gives up on it — condition on this file, so the
+# decision made here is not re-derived anywhere else. It lives on the runtime
+# filesystem, which means it describes this boot and nothing else.
+#
+# A flag that cannot be written costs the candidate its commit, and the boot
+# after this one runs the generation that was committed before: the safe end of
+# the transaction, reported rather than fatal.
+rm -f "$trial_flag" 2>/dev/null || true
+if [ -n "$trialling" ]; then
+	mkdir -p "$(dirname "$trial_flag")" 2>/dev/null || true
+	if ! (printf '%s\n' "$target" >"$trial_flag") 2>/dev/null; then
+		warn "this boot could not be marked as a trial; the candidate will not commit"
+	fi
+fi
+
+# The machine id is provisioned rather than generated, so a unit keeps one
+# identity — in its logs above all — across a reflash. systemd has already
+# bind-mounted a transient id over /etc/machine-id by now; writing the file it
+# points at replaces the value everything subsequently reads.
+mid="${target}/machine-id"
+if [ -f "$mid" ]; then
+	id=$(brenn_first_line "$mid")
+	if printf '%s' "$id" | grep -Eq "$BRENN_RE_MACHINE_ID"; then
+		printf '%s\n' "$id" >"$machine_id_file"
+	else
+		warn "the provisioned machine id is malformed; keeping the transient one"
+	fi
+else
+	warn "the generation carries no machine id; keeping the transient one"
+fi
+
+# The host name is the other half of that identity, and the more urgent one: it
+# is what the address lease registers, so it has to be right before any link is
+# configured. Setting the kernel's own knob is the one way to do it on a
+# read-only root that needs neither a bus nor a daemon.
+hostname_source="${target}/hostname"
+if [ -f "$hostname_source" ]; then
+	name=$(brenn_first_line "$hostname_source")
+	if printf '%s' "$name" | grep -Eq "$BRENN_RE_HOSTNAME"; then
+		printf '%s\n' "$name" >"$hostname_file"
+	else
+		warn "the provisioned host name is not a DNS label; keeping the image default"
+	fi
+else
+	warn "the generation carries no host name; keeping the image default"
+fi
+
+exit "$rc"

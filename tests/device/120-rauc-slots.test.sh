@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# The update mechanism knows which slot it is running from.
+#
+# This is the one assertion that has to hold before an update is ever attempted,
+# and the reason it is written now rather than with the rest of the update
+# tests: RAUC decides which pair to write by deciding which pair is running, and
+# if it gets that backwards the first install lands on the system performing it.
+# There is no recovering from that over the network — it is the way to spend a
+# reflash.
+#
+# Both slots ship byte-identical, with identical filesystem UUIDs, so the usual
+# answers are unavailable: nothing may be addressed by filesystem UUID, and the
+# kernel command line is one template shared by both slots. What is left is the
+# command line's slot link, which resolves to whichever partition the firmware
+# actually handed over, and the firmware's own report of that partition in the
+# device tree. This test asserts that RAUC's answer, the backend's answer and
+# the firmware's report are all the same one.
+#
+# It is numbered after the flash-budget measurement deliberately: reaching RAUC
+# activates its service, which writes its status file to the persistent
+# partition — a deliberate write class, and not one to have running inside a
+# window that is measuring writes.
+
+set -uo pipefail
+
+# shellcheck source=tests/lib/assert.sh
+. "${BRENN_TESTS_LIB}/assert.sh"
+# shellcheck source=tests/lib/device.sh
+. "${BRENN_TESTS_LIB}/device.sh"
+
+dev_open
+
+# One reading, parsed here. The shell form is stable output meant for exactly
+# this, and taking it once keeps every assertion below about the same instant.
+dev_capture 'rauc status --output-format=shell'
+status=$DEV_OUT
+if ! printf '%s\n' "$status" | grep -q '^RAUC_SYSTEM_COMPATIBLE='; then
+	t_fail "the update mechanism answers" \
+		"rauc status did not report a system" \
+		"output: ${status:-<nothing>}"
+	t_done
+fi
+t_pass "the update mechanism answers"
+
+# A shell-quoted assignment; the value is what is inside the quotes.
+rauc_value() {
+	printf '%s\n' "$status" | sed -n "s/^$1='\\(.*\\)'\$/\\1/p" | head -n1
+}
+
+t_eq "the device accepts bundles built for this product" \
+	"$(rauc_value RAUC_SYSTEM_COMPATIBLE)" "$EXPECT_RAUC_COMPATIBLE"
+
+# This device depends on the running slot resolving through the command-line
+# token it shipped, stated as an assertion rather than merely reading the
+# reported value.
+root_token=$(printf '%s\n' "$EXPECT_CMDLINE" | tr ' ' '\n' | sed -n 's/^root=//p')
+t_eq "the running slot was resolved through the command line we shipped" \
+	"$(rauc_value RAUC_SYSTEM_BOOTED_BOOTNAME)" "$root_token"
+
+# Exactly one slot is the booted one. Two would mean the resolution matched
+# both bit-identical slots; none means it matched neither, and RAUC would refuse
+# to install at all.
+booted_indices=$(printf '%s\n' "$status" |
+	sed -n "s/^RAUC_SLOT_STATE_\\([0-9]*\\)='booted'\$/\\1/p")
+booted_count=$(printf '%s' "$booted_indices" | grep -c . || true)
+t_eq "exactly one slot is running" "$booted_count" 1
+if [ "$booted_count" != "1" ]; then
+	t_done
+fi
+
+booted_bootname=$(rauc_value "RAUC_SLOT_BOOTNAME_${booted_indices}")
+
+# The backend's answer, from the firmware's device-tree report. Agreement with
+# RAUC's own resolution confirms both independent paths identify the same slot.
+dev_eq "the backend and RAUC agree on which slot is running" \
+	"$(dev_quote "$EXPECT_RAUC_BACKEND") get-current" "$booted_bootname"
+
+# And the partition itself. The slot RAUC believes it is running is configured
+# on some partition; the firmware said which partition it booted. Resolved
+# through the GPT labels the configuration names, they have to be the same one.
+slot_field() {
+	printf '%s\n' "$EXPECT_RAUC_SLOTS" | awk -F'|' -v s="$1" -v k="$2" '
+		$1 == s {
+			n = split($2, kv, ",")
+			for (i = 1; i <= n; i++) {
+				split(kv[i], p, "=")
+				if (p[1] == k) print p[2]
+			}
+		}'
+}
+slot_named_by() {
+	printf '%s\n' "$EXPECT_RAUC_SLOTS" | awk -F'|' -v k="$1" -v v="$2" '
+		{
+			n = split($2, kv, ",")
+			for (i = 1; i <= n; i++) {
+				split(kv[i], p, "=")
+				if (p[1] == k && p[2] == v) { print $1; exit }
+			}
+		}'
+}
+
+booted_slot=$(slot_named_by bootname "$booted_bootname")
+booted_boot_slot=$(slot_named_by parent "${booted_slot#slot.}")
+booted_boot_device=$(slot_field "$booted_boot_slot" device)
+
+firmware_partition=""
+dev_firmware_partition && firmware_partition=$DEV_PARTITION
+dev_capture "readlink -f $(dev_quote "$booted_boot_device")"
+configured_device=$DEV_OUT
+configured_partition=$(dev_partition_number "$configured_device")
+
+if [ -n "$firmware_partition" ] && [ "${configured_partition:-x}" = "$firmware_partition" ]; then
+	t_pass "the running slot is configured on the partition the firmware booted (${configured_device})"
+else
+	t_fail "the running slot is configured on the partition the firmware booted" \
+		"firmware booted partition: ${firmware_partition:-<nothing>}" \
+		"${booted_boot_slot} resolves to: ${configured_device:-<nothing>}"
+fi
+
+# The committed pair is the pair running. Before any update this is simply true;
+# after one it is what says the update was committed rather than left on trial.
+# A device sitting in an uncommitted trial fails here, which is a thing worth
+# being told before running anything else against it.
+primary_slot=$(rauc_value RAUC_BOOT_PRIMARY)
+primary_index=$(printf '%s\n' "$(rauc_value RAUC_SYSTEM_SLOTS)" |
+	awk -v want="$primary_slot" '{ for (i = 1; i <= NF; i++) if ($i == want) { print i; exit } }')
+t_eq "the committed pair is the pair that is running" \
+	"$(rauc_value "RAUC_SLOT_BOOTNAME_${primary_index:-0}")" "$booted_bootname"
+dev_eq "and the backend commits to the same one" \
+	"$(dev_quote "$EXPECT_RAUC_BACKEND") get-primary" "$booted_bootname"
+
+# Neither pair has been refused. A refusal is a marker on the persistent
+# partition, and one that exists before any update ever ran means something
+# marked a slot bad that nobody installed.
+for index in $(printf '%s\n' "$status" |
+	sed -n "s/^RAUC_SLOT_CLASS_\\([0-9]*\\)='rootfs'\$/\\1/p"); do
+	t_eq "slot $(rauc_value "RAUC_SLOT_BOOTNAME_${index}") has not been refused" \
+		"$(rauc_value "RAUC_SLOT_BOOT_STATUS_${index}")" \
+		"$EXPECT_RAUC_SLOT_STATUS_GOOD"
+done
+
+# The deadman is loaded and waiting. It is what ends a trial boot that came up
+# and never became healthy, and a timer that is not running is a candidate that
+# can sit there unreachable forever.
+dev_eq "the trial deadman timer is waiting" \
+	"systemctl is-active $(dev_quote "$EXPECT_DEADMAN_TIMER")" active
+
+t_done

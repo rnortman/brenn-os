@@ -1,0 +1,53 @@
+[Unit]
+Description=Application payload
+
+Requires=brenn-app-fetch.service
+After=brenn-app-fetch.service
+ConditionPathExists=/run/brenn-app/current/run
+
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/run/brenn-app/current/run
+WorkingDirectory=/run/brenn-app/current
+Environment=BRENN_APP_ROOT=/run/brenn-app/current
+Environment=BRENN_DATA_DIR=/data/app
+Environment=BRENN_CA_FILE=/run/brenn/provisioning/ca/brenn-ca.pem
+
+# Scratch space is RAM, inside the same capped mount as the payload, so
+# nothing a payload writes by habit lands on flash.
+Environment=TMPDIR=/run/brenn-app/scratch
+
+# Unprivileged, always. A payload arrives over the network far more often than
+# the image does and with none of its review, so it is not a channel that may
+# reach root; anything that genuinely needs privilege belongs in the image,
+# where it is signed and reversible.
+User=app
+Group=app
+
+Restart=on-failure
+RestartSec=5s
+
+# Nearly free on a read-only root, and worth having for the case the root is
+# not the only thing to protect. The writable exceptions are the two places
+# the contract says a payload may write: its scratch space in RAM, and the
+# persistent directory for the rare asset worth keeping across a reboot. Both
+# are named by their real paths, since /data is a symlink and what is unmasked
+# here is the destination.
+#
+# Device nodes stay visible. Cameras, audio, the servo bus and the IMU are the
+# reason this device exists, and access to them is granted by the groups the
+# `app` account is in.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/brenn-app/scratch /persistent/app /persistent/models
+NoNewPrivileges=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

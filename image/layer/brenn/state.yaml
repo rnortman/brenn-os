@@ -1,0 +1,33 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-state
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Runtime writable state. Replaces the A/B layout's
+#  persistent /var, /home and journal with a RAM-backed /var overlay and a
+#  volatile journal, leaving the persistent partition as the only thing
+#  written in steady state.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: systemd-min
+# METAEND
+---
+# Everything this layer contributes is static files, so it ships as the
+# layer's rootfs overlay (state.rootfs-overlay) rather than as hooks. The
+# read-only lower half of the /var overlay is built by image/post-build.sh,
+# which is the last thing to touch the root filesystem before the image
+# layout moves /var aside.
+#
+# The overlay also carries three units symlinked to /dev/null, which is how a
+# unit is masked. The A/B image layout writes an fstab that bind-mounts
+# /home and /var/log/journal onto the persistent partition and mounts the
+# tryboot selector partition read-write at /bootfs. All three are writable
+# mounts that this product does not want:
+#
+#   home.mount             no account has a home on persistent storage
+#   var-log-journal.mount  the journal is volatile and uploaded
+#   bootfs.mount           the selector partition is mounted only for the
+#                          moment it takes to switch slots, by the code that
+#                          switches them
+#
+# The fstab itself is generated during image assembly and is not ours to
+# edit; masking the units it generates is.
+mmdebstrap:
+  packages: []

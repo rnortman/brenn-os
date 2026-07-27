@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+# Give up on a trial boot that never committed.
+#
+# The firmware's one-shot flag covers the boot that fails loudly: a panic, or a
+# hang the watchdog turns into a reset, returns the device to the pair it had.
+# It does nothing for the boot that comes up, stays up, and is useless — no
+# address, no way in, no application. That candidate would sit there
+# indefinitely, uncommitted and unreachable.
+#
+# So a timer fires once, well after everything that could have committed has
+# had its chance, and this reboots the device if nothing did. Nothing was
+# committed, so the reboot lands on the pair that was running before the
+# update.
+#
+# Whether the commit happened is not tracked separately: the selector file is
+# the record. A committed trial is one where the pair the firmware booted is
+# also the pair it would boot by default.
+
+set -eu
+
+backend=${BRENN_TRYBOOT_BACKEND:-/usr/lib/rauc/rpi-tryboot-backend}
+reboot_cmd=${BRENN_DEADMAN_REBOOT:-systemctl reboot}
+
+primary=$("$backend" get-primary)
+current=$("$backend" get-current)
+
+if [ "$primary" = "$current" ]; then
+	echo "trial boot of slot ${current} committed; nothing to do"
+	exit 0
+fi
+
+echo "trial boot of slot ${current} did not commit; rebooting to slot ${primary}" >&2
+
+# Unquoted on purpose: the command is a word list, and making it overridable is
+# what lets the decision be exercised without rebooting the machine running the
+# test.
+# shellcheck disable=SC2086
+exec $reboot_cmd

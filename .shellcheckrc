@@ -1,0 +1,14 @@
+# Test scripts source their helpers through a variable, so each source site
+# carries a `# shellcheck source=` directive naming the real file. Following
+# those is opt-in, and this is the opt-in: without it every test reports an
+# unfollowable source and the lint fails on nothing.
+external-sources=true
+
+# Directives name paths from the repo root, which is two levels up from the
+# suite directories the tests live in.
+source-path=SCRIPTDIR/../..
+
+# And from the script's own directory, which is where a program installed into
+# the image finds the library it shares with its siblings — the same directory
+# at lint time as on a device.
+source-path=SCRIPTDIR

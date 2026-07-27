@@ -1,0 +1,41 @@
+[Unit]
+Description=Obtain and activate the application payload
+
+# The payload comes over TLS from an address the device was provisioned with,
+# so the clock has to be plausible and the selected generation has to be
+# published before this can mean anything.
+RequiresMountsFor=/run/brenn-app
+Wants=network-online.target
+After=network-online.target time-sync.target brenn-config-select.service
+ConditionPathExists=/run/brenn/provisioning/app/fetch.conf
+
+# The gate that decides whether a boot is worth keeping includes having got a
+# payload. A boot that cannot reach the application server is a boot that
+# cannot be given the application, so an update or a configuration change
+# trialled on it reverts rather than commits.
+Before=brenn-healthy.target
+
+# No start limit, ever. The unit is meant to keep trying for as long as the
+# device is up; a limit would convert a long outage into a permanent failure
+# that only a reboot clears.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# The retry lives inside the program rather than in Restart=, because the
+# health gate has to be able to wait for it: a failed start would fail the
+# gate's own job, and nothing would re-run it when the server came back. So
+# the start simply takes as long as it takes, with no timeout — on a trial
+# boot the deadman timer is what ends the wait, and on an ordinary boot
+# nothing is waiting on the gate at all.
+#
+# Restart= remains for the other kind of failure: a program killed rather than
+# a download refused.
+ExecStart=/usr/lib/brenn/brenn-app-fetch
+TimeoutStartSec=infinity
+Restart=on-failure
+RestartSec=5s
+RestartSteps=6
+RestartMaxDelaySec=5min
