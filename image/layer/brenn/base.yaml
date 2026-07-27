@@ -5,7 +5,7 @@
 #  the Raspberry Pi archive, systemd and the A/B slot mapper, and installs the
 #  device package payload.
 # X-Env-Layer-Version: 1.0.0
-# X-Env-Layer-Requires: debian-trixie-arm64-minbase-snapshot,
+# X-Env-Layer-Requires: brenn-debian-snapshot,
 #  rpi-debian-trixie,
 #  systemd-min,
 #  systemd-net-min,

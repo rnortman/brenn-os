@@ -26,6 +26,42 @@ make today's builds reproducible against today's archive.
 Done when a build of an old commit resolves its pinned kernel without depending
 on upstream retention.
 
+## `snapshot-sources-upstream`
+
+The apt sources template the root filesystem is bootstrapped from is a fork of
+the image builder's own (`image/layer/brenn/apt/trixie-snapshot.sources`, with
+`image/layer/brenn/debian-snapshot.yaml` rendering it). The two differ in one
+field: upstream waives the snapshot Release freshness check with `Options:
+check-valid-until=no`, which is the one-line sources format's spelling of the
+option and is silently ignored in a deb822 file, so the waiver never takes
+effect and no commit older than about a week rebuilds. The correct deb822
+spelling is `Check-Valid-Until: no`.
+
+Deferred as a fork rather than fixed in place because the builder is a pinned
+submodule of an upstream project, and waiting on upstream review leaves the
+build broken meanwhile. `tests/host/085-snapshot-sources.test.sh` holds the
+fork to upstream's text apart from that field, so a submodule bump cannot drift
+it quietly.
+
+Done when the builder's own template carries the correct field — at which point
+that test fails on purpose, saying so — and the fork, its layer, and the
+`Requires` entry that selects it are removed.
+
+## `local-image-lane`
+
+`make image` needs an arm64 Debian host, and the maintainer's workstation is
+not one, so the only machine that builds an image today is CI. That inverts the
+posture the rest of this repo is built on, where the local gate is the
+authority and CI is the backstop: for the image lane there is no local gate at
+all, and a build failure is only ever discovered after a push.
+
+Deferred because the fix is infrastructure — an arm64 virtual machine, or a
+binfmt/qemu-user-static container lane — rather than a change to the build, and
+because the pinned builder makes the CI build itself reproducible.
+
+Done when `make image` runs on a developer workstation that is not an arm64
+Debian host and produces the same image CI does.
+
 ## `erofs-root`
 
 The root filesystem is read-only ext4. The image layout supports erofs behind a

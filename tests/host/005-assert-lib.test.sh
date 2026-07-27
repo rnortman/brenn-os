@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# The assertion helpers, at the one point where they decide a verdict instead of
+# reporting one.
+#
+# A skip tells the runner the script checked nothing, and the runner counts that
+# as an honest zero. Reached past an assertion that has already failed, that
+# verdict is wrong in the most expensive direction: the FAIL is printed, and the
+# lane is green anyway. Every dependency skip in the suite sits below some
+# assertion that needed no dependency, so which of the two wins belongs to the
+# lib rather than to each test that has to remember.
+
+set -uo pipefail
+
+# shellcheck source=tests/lib/assert.sh
+. "${BRENN_TESTS_LIB}/assert.sh"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# An empty submodule checkout, which is what a fresh clone has before
+# `git submodule update --init`.
+fake_root="${work}/repo"
+mkdir -p "${fake_root}/rpi-image-gen"
+
+# Driven by a script, because deciding to skip is an exit, which would take this
+# test with it.
+driver="${work}/driver"
+cat >"$driver" <<'DRIVER'
+set -uo pipefail
+# shellcheck source=tests/lib/assert.sh
+. "${BRENN_TESTS_LIB}/assert.sh"
+
+if [ -n "${FAIL_FIRST:-}" ]; then
+	t_fail "an assertion that needed nothing" "and found the tree wrong"
+fi
+
+case "$DRIVE" in
+	skip)
+		t_skip "python3-nonesuch is not installed"
+		;;
+	builder)
+		t_builder_file "${BRENN_REPO_ROOT}/rpi-image-gen/absent" \
+			"the builder file is where it is expected" \
+			"a bump moved it"
+		;;
+esac
+t_done
+DRIVER
+
+drive() {
+	env BRENN_TESTS_LIB="$BRENN_TESTS_LIB" BRENN_REPO_ROOT="$fake_root" \
+		"$@" bash "$driver" 2>&1
+}
+
+out=$(drive DRIVE=skip)
+t_eq "a missing precondition alone skips" "$?" 77
+case "$out" in
+	*"SKIP  python3-nonesuch"*) t_pass "and the skip names what is missing" ;;
+	*) t_fail "and the skip names what is missing" "output: ${out}" ;;
+esac
+
+out=$(drive DRIVE=skip FAIL_FIRST=1)
+t_eq "a missing precondition below a failure fails" "$?" 1
+case "$out" in
+	*"FAIL  an assertion that needed nothing"*"NOSKIP"*)
+		t_pass "and the failure is still on screen, above the refusal to skip" ;;
+	*) t_fail "and the failure is still on screen, above the refusal to skip" "output: ${out}" ;;
+esac
+
+# The same rule through the submodule helper, which is the shape the suite meets
+# it in: a fresh clone with an empty checkout, below assertions that read only
+# the tree.
+out=$(drive DRIVE=builder)
+t_eq "an unchecked-out builder alone skips" "$?" 77
+case "$out" in
+	*"git submodule update --init"*) t_pass "and the skip says how to check it out" ;;
+	*) t_fail "and the skip says how to check it out" "output: ${out}" ;;
+esac
+
+out=$(drive DRIVE=builder FAIL_FIRST=1)
+t_eq "an unchecked-out builder below a failure fails" "$?" 1
+
+t_done

@@ -47,3 +47,19 @@ today; none of it has yet run on hardware.
   secret-scanning commit and push gates wired by `make setup-hooks`; and CI that
   independently scans the tree, runs the gate, builds the image, asserts against
   it, and round-trips an update bundle with a throwaway key.
+
+### Fixed
+
+- **Builds of a commit more than a week old.** The Debian snapshot the root
+  filesystem is bootstrapped from is pinned to a timestamp, and a snapshot
+  Release file expires about a week after it is made. The waiver for that
+  expiry was written in the sources template as an `Options:` field, which a
+  deb822 sources file ignores in silence — so the waiver never applied and no
+  build of an aged pin succeeded, which is precisely the reproducibility that
+  pinning the snapshot exists to buy. The tree now carries a corrected fork of
+  the template, held to the builder's own by a host assertion.
+- **The `check` lane's privileged cases, in CI.** Its runner restricts
+  unprivileged user namespaces through an AppArmor profile, which the lane's
+  own assertion caught as a red job rather than letting the cases that need a
+  namespace skip quietly. The lane relaxes that restriction for its own job;
+  the assertion is unchanged and remains the authority.

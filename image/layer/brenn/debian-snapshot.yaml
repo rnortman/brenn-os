@@ -1,0 +1,21 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-debian-snapshot
+# X-Env-Layer-Category: distribution
+# X-Env-Layer-Desc: Debian Trixie arm64 minbase from a snapshot mirror, using
+#  the in-repo source template. Forked from the builder's
+#  debian-trixie-arm64-minbase-snapshot layer only to correct the field that
+#  waives the Release freshness check; tests/host/085 holds the two templates
+#  equal apart from that field.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Type: dynamic
+# X-Env-Layer-Generator: snapgen ${SRCROOT}/layer/brenn/apt/trixie-snapshot.sources
+# METAEND
+---
+mmdebstrap:
+  architectures:
+    - arm64
+  mode: auto
+  variant: minbase
+  suite: trixie
+  mirrors:
+    - ${DYNROOT}/templates/debian/apt/trixie-snapshot.sources

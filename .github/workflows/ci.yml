@@ -65,6 +65,17 @@ jobs:
           "$RUNNER_TEMP/bin/shellcheck" --version | grep -qx "version: ${SHELLCHECK_VERSION}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
+      # Ubuntu 24.04 does not refuse unprivileged user namespaces; it moves the
+      # unshared process into a restricted AppArmor profile that cannot write
+      # its own uid_map, which presents as EPERM from `unshare -r`. Relax that
+      # policy for this job only. The assert below stays the authority: a
+      # runner this step cannot relax is a red job, not a thinner lane.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       # The host lane's cases that install a provisioning generation need uid
       # 0, and take it from a user namespace rather than from the job. Without
       # one they are not run and the lane says so — a gate quietly checking

@@ -29,19 +29,10 @@ t_eq "the lane pins a scanner version" \
 t_eq "and pins the download by digest, since a release asset can be replaced" \
 	"$(printf '%s' "$ci_digest" | grep -c '^[0-9a-f]\{64\}$')" 1
 
-# A checkout without the submodule cannot answer the question and says so. A
-# checkout *with* the submodule and no hook where the hook belongs is the case
-# this test exists for — a bump that moved it — so it fails rather than skips:
-# skipping there would quietly restore the unpinned download this pin removes.
 hook="${BRENN_REPO_ROOT}/rpi-image-gen/layer/sbom/gen.sh"
-if [ ! -f "$hook" ]; then
-	if [ -z "$(ls -A "${BRENN_REPO_ROOT}/rpi-image-gen" 2>/dev/null)" ]; then
-		t_skip "the builder is not checked out — run: git submodule update --init"
-	fi
-	t_fail "the builder's scanner hook is where the pin expects it" \
-		"nothing at ${hook} — if the bump moved it, the lane's pin has to follow"
-	t_done
-fi
+t_builder_file "$hook" \
+	"the builder's scanner hook is where the pin expects it" \
+	"if the bump moved it, the lane's pin has to follow"
 
 # The builder writes it as a tag; the lane writes it as a version. Compared as
 # versions so the two spellings of the same pin do not read as a mismatch.

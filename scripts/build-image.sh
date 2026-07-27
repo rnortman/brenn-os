@@ -84,6 +84,10 @@ mkdir -p "$workdir"
 
 # The builder resolves layers, configs and hooks relative to -S, so every
 # brenn-os-specific input reaches it through that one directory.
+#
+# TODO(local-image-lane): this needs an arm64 Debian host and dies here on
+# anything else, so a workstation that is not one has no way to run the image
+# lane before CI does.
 exec "$builder" build \
 	-S "$srcdir" \
 	-c "$config" \

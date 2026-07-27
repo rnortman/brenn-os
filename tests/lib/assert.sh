@@ -25,7 +25,16 @@ t_fail() {
 
 # Skip the whole test. The runner reports it and holds the suite to account for
 # having checked nothing.
+#
+# Past a recorded failure a skip is a lie, and the expensive kind: the failure
+# is already on screen, but the script exits 77 and the suite counts it as
+# checked nothing rather than as red. So a failure already recorded outranks any
+# later missing precondition, and the run ends as the failure it is.
 t_skip() {
+	if [ "$t_failures" -gt 0 ]; then
+		echo "NOSKIP  ${t_failures} failure(s) stand; would have skipped: $*"
+		t_done
+	fi
 	echo "SKIP  $*"
 	exit 77
 }
@@ -36,6 +45,23 @@ t_require_cmd() {
 		command -v "$cmd" >/dev/null 2>&1 ||
 			t_skip "requires ${cmd}, which is not installed"
 	done
+}
+
+# Require a file inside the pinned builder submodule. Its absence has two
+# meanings and they are not interchangeable: an empty checkout cannot answer the
+# question and skips with the command that fixes it, while a checked-out builder
+# missing the file is itself the finding — a bump moved or renamed it — and so
+# fails and ends the test. Skipping the second case would quietly retire the
+# assertion the caller exists to make. `what` names the property being held;
+# `consequence` says what the move costs the caller.
+t_builder_file() {
+	local path=$1 what=$2 consequence=$3
+	[ -f "$path" ] && return 0
+	if [ -z "$(ls -A "${BRENN_REPO_ROOT}/rpi-image-gen" 2>/dev/null)" ]; then
+		t_skip "the builder is not checked out — run: git submodule update --init"
+	fi
+	t_fail "$what" "nothing at ${path} — ${consequence}"
+	t_done
 }
 
 t_eq() {

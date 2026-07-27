@@ -1,0 +1,23 @@
+# The Debian archive the root filesystem is bootstrapped from, pinned to a
+# snapshot.debian.org timestamp the generator substitutes in. A snapshot
+# Release file expires about a week after it is made, so building an older
+# commit needs the freshness check waived. The archive is identified by an
+# exact signed timestamp and its Release signature is verified either way.
+#
+# TODO(snapshot-sources-upstream): a fork of the builder's own template,
+# carried only because that one writes the waiver as
+# `Options: check-valid-until=no` — the one-line format's spelling, which a
+# deb822 file ignores in silence. Delete this file and the layer that renders
+# it once the builder's template is fixed; tests/host/085 fails when it is.
+X-IG-Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+Types: deb
+URIs: https://snapshot.debian.org/archive/debian/${SNAPSHOT_ISO8601}
+Suites: trixie
+Components: main contrib non-free non-free-firmware
+Check-Valid-Until: no
+
+Types: deb
+URIs: https://snapshot.debian.org/archive/debian-security/${SNAPSHOT_ISO8601}
+Suites: trixie-security
+Components: main contrib non-free non-free-firmware
+Check-Valid-Until: no
