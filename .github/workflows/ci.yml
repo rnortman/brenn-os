@@ -150,6 +150,10 @@ jobs:
 
       # The rootfs is assembled in an unprivileged user namespace that must be
       # able to traverse into the runner's home directory.
+      #
+      # TODO(ci-container-toolchain): this installs whatever the runner's
+      # archive serves today, which is the one input of this lane that is not
+      # pinned. The container lane's toolchain is.
       - name: Install builder host dependencies
         working-directory: rpi-image-gen
         run: |
@@ -186,6 +190,19 @@ jobs:
       - name: Assert against the built image
         run: make test-image PROFILE=reachy
 
+      # What this build produced, in a form that fits in an artifact: the
+      # partition table, the image description's identity fields, and the
+      # package set. The image itself is gigabytes and is never uploaded.
+      - name: Record what the build produced
+        run: scripts/image-manifest.sh emit --output "$RUNNER_TEMP/manifest-native.txt"
+
+      - name: Upload the manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-native
+          path: ${{ runner.temp }}/manifest-native.txt
+          if-no-files-found: error
+
       # The update path, end to end, on the artefacts a release would ship. The
       # signing pair is generated inside the run and dies with it: no key of any
       # kind is stored, uploaded, or reachable from outside this job.
@@ -211,6 +228,112 @@ jobs:
           name: sbom-reachy
           path: work/image-*/*.sbom
           if-no-files-found: error
+
+  # The other half of the image lane: the same build, driven through the pinned
+  # container on a host the builder does not support. That is what a developer
+  # workstation is, so this job is the only place outside one where the lane a
+  # developer actually builds on runs at all.
+  #
+  # Slower than the native job by a wide margin — every binary in the target
+  # root filesystem runs under emulation here — so the timeout is generous, and
+  # this is not a required status check until it has a record of being stable.
+  image-container:
+    name: image-container
+    needs: image-scope
+    if: needs.image-scope.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      # podman and a subordinate id range run the container rootless; the qemu
+      # packages give the host the aarch64 registration the container borrows;
+      # mtools is what the image suite reads the vfat partitions with, and is
+      # not on the runner. The builder's own dependencies are in the container
+      # image and are not installed here — that is the whole point of the lane.
+      - name: Install the container lane's host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap qemu-user-static binfmt-support
+          sudo apt-get install -y --no-install-recommends mtools
+
+      # Rootless podman maps the container's root to the invoking user and
+      # every other uid into a subordinate range, which the user has to own.
+      # The runner image does not always allocate one, and podman's failure
+      # without it names uid mapping rather than this.
+      - name: Ensure the runner owns a subordinate id range
+        run: |
+          user=$(id -un)
+          for f in /etc/subuid /etc/subgid; do
+            grep -q "^${user}:" "$f" || echo "${user}:200000:65536" | sudo tee -a "$f" >/dev/null
+          done
+          podman system migrate
+
+      # The container carries no qemu of its own: arm64 binaries in the target
+      # root filesystem run through the host's registration, and the F flag is
+      # what makes that work from inside a container — it opens the interpreter
+      # at registration time, so the interpreter need not exist in the
+      # container's filesystem. Asserted before the build rather than
+      # discovered hours into one.
+      - name: Assert the host's aarch64 registration carries the F flag
+        run: |
+          reg=/proc/sys/fs/binfmt_misc/qemu-aarch64
+          test -f "$reg"
+          grep -qx enabled "$reg"
+          grep -q '^flags:.*F' "$reg"
+
+      - name: Build the image in the container
+        env:
+          BRENN_BUILD_CONTAINER: always
+        run: make image PROFILE=reachy
+
+      # Only the build is containerised; the assertions run on the host.
+      - name: Assert against the built image
+        run: make test-image PROFILE=reachy
+
+      - name: Record what the build produced
+        run: scripts/image-manifest.sh emit --output "$RUNNER_TEMP/manifest-container.txt"
+
+      - name: Upload the manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-container
+          path: ${{ runner.temp }}/manifest-container.txt
+          if-no-files-found: error
+
+  # The claim the container lane exists to make: that a build on a host the
+  # builder does not support is the same product as the release-shaped one. Both
+  # jobs have to have finished, so this is a job of its own rather than a step
+  # in either — and cheap, because it compares two text files.
+  #
+  # Manifest level first. Hardening to equality of the images themselves is
+  # worth doing once the two lanes are observed to agree at this level, and not
+  # before: an unexplained difference is a finding to understand, and a finding
+  # is easier to read as one line of a manifest than as two differing hashes.
+  image-identity:
+    name: image-identity
+    needs: [image, image-container]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifest-native
+          path: manifests
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifest-container
+          path: manifests
+
+      - name: Compare the two lanes
+        run: |
+          scripts/image-manifest.sh compare \
+            manifests/manifest-native.txt \
+            manifests/manifest-container.txt
 
   scrub:
     name: scrub

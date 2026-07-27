@@ -1,0 +1,168 @@
+# The host environment the image builder runs in.
+#
+# The builder probes its dependencies with `dpkg -s` and installs them with
+# `apt`, so it runs on a Debian host or it does not run. This image is that
+# host: built locally, never published, and pinned the same way the image it
+# builds is pinned — base by digest, packages by snapshot timestamp — so the
+# host toolchain is a declared input of the build rather than whatever the
+# machine happened to have.
+#
+# Two operations run in here, `rpi-image-gen build` and `metadata --lint`.
+# Everything else in the repo runs natively.
+#
+# Nothing arch-specific is installed: arm64 binaries in the target root
+# filesystem execute through the host's own binfmt_misc registration, which the
+# wrapper preflights and passes in. That keeps one image usable on an x86_64
+# and an arm64 host, and keeps qemu a host-owned component.
+
+FROM docker.io/library/debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd
+
+# The archive, at a timestamp rather than at a suite. The same timestamp the
+# image's own base is bootstrapped from (SOURCE_DATE_EPOCH in
+# image/config/brenn-common.yaml), so the tools and the thing they build come
+# from one dated view of Debian.
+#
+# A snapshot Release file expires about a week after it is made, and apt spells
+# the waiver for that `Check-Valid-Until: no` in a deb822 file — never as an
+# `Options:` field, which deb822 ignores in silence. Without it this image
+# stops building a week after the pin is set.
+#
+# Over http for the first fetch only, and it has to be: the base image carries no
+# CA certificates, so an https archive cannot be reached until ca-certificates is
+# installed, which is what these sources exist to do. The archive signature is
+# what protects that fetch — the Release file is verified against the pinned
+# Debian keyring named below — and it authenticates the packages but not which
+# dated view of the archive served them: the timestamp in the URL is client-side
+# routing, and with the freshness check waived a network attacker could answer
+# with an older, validly signed snapshot. So these sources buy exactly one
+# package, and the step below moves them to https before anything else is
+# installed.
+RUN set -eu; \
+	rm -f /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; \
+	printf '%s\n' \
+		'Types: deb' \
+		'URIs: http://snapshot.debian.org/archive/debian/20260720T000000Z' \
+		'Suites: trixie' \
+		'Components: main contrib non-free non-free-firmware' \
+		'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+		'Check-Valid-Until: no' \
+		'' \
+		'Types: deb' \
+		'URIs: http://snapshot.debian.org/archive/debian-security/20260720T000000Z' \
+		'Suites: trixie-security' \
+		'Components: main contrib non-free non-free-firmware' \
+		'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+		'Check-Valid-Until: no' \
+		> /etc/apt/sources.list.d/snapshot.sources
+
+# The one package the http sources exist to fetch, and the switch to https that
+# follows it. From here the snapshot timestamp in the URL is authenticated by the
+# transport as well, so a different dated view of the archive cannot be served in
+# place of the pinned one. The rewrite is asserted rather than assumed: a sed
+# that matched nothing would leave every later fetch on the weaker footing
+# without failing. What remains accepted is the ca-certificates package itself,
+# fetched before there is any way to check more than its signature.
+RUN set -eu; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends ca-certificates; \
+	sed -i 's|http://snapshot\.debian\.org|https://snapshot.debian.org|' \
+		/etc/apt/sources.list.d/snapshot.sources; \
+	grep -q 'https://snapshot' /etc/apt/sources.list.d/snapshot.sources; \
+	! grep -q 'http://snapshot' /etc/apt/sources.list.d/snapshot.sources; \
+	apt-get update
+
+# The builder's own dependency manifest (rpi-image-gen/depends), package for
+# package, plus ca-certificates because the snapshot service and the pinned
+# source tarballs are fetched over https. A submodule bump that adds a
+# dependency is a failing host assertion — tests/host/095 holds this list to
+# the manifest — rather than a build that dies at its first dependency check.
+#
+# podman is in the manifest and is installed for that reason alone; it is never
+# used inside this image, where the builder always runs as uid 0.
+#
+# arch-test is not in the manifest and is here because of what this lane does
+# that the manifest's author's lane does not: bootstrapping an arm64 root
+# filesystem on an x86_64 host. Without it mmdebstrap refuses to bootstrap a
+# foreign architecture at all, rather than trusting the binfmt registration.
+#
+# The flags this image is run with are part of it: rootless podman on the host,
+# `--security-opt label=disable` so the
+# bind-mounted repo is reachable under SELinux without relabelling a developer's
+# checkout, and `--cap-add=SYS_ADMIN`, which is what mmdebstrap needs to mount
+# the chroot's pseudo-filesystems — `unshare --mount` fails without it and
+# nothing less than that capability makes it work. Not `--privileged`.
+RUN set -eu; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends \
+		arch-test \
+		autoconf \
+		automake \
+		autopoint \
+		bash \
+		btrfs-progs \
+		build-essential \
+		ca-certificates \
+		coreutils \
+		cryptsetup \
+		curl \
+		dbus-user-session \
+		dctrl-tools \
+		debian-archive-keyring \
+		dosfstools \
+		dpkg-dev \
+		e2fsprogs \
+		fdisk \
+		flex \
+		gettext \
+		grep \
+		libtool \
+		make \
+		mmdebstrap \
+		mtools \
+		pkgconf \
+		podman \
+		pv \
+		python3 \
+		python3-debian \
+		python3-jsonschema \
+		python3-pip \
+		python3-yaml \
+		rsync \
+		uidmap \
+		uuid-runtime \
+		zip; \
+	rm -rf /var/lib/apt/lists/*
+
+# /bin/sh must be bash: the builder evaluates bash syntax through it, and
+# Debian's default of dash does not support that. The link is repointed
+# directly: dash's debconf question answered non-interactively leaves the link
+# where it was, which would put the defect back without saying so. Nothing in
+# this image reconfigures dash afterwards, and the assertion below is what would
+# notice.
+RUN set -eu; \
+	ln -sf /usr/bin/bash /bin/sh; \
+	test "$(readlink -f /bin/sh)" = /usr/bin/bash
+
+# The SBOM scanner, pinned on PATH so the build's SBOM input is deterministic.
+# The version is the one CI pins, asserted by tests/host/080 and 095. Release
+# assets can be replaced, so the download is checked against its digest.
+RUN set -eu; \
+	SYFT_VERSION=1.44.0; \
+	SYFT_SHA256_amd64=0e91737aee2b5baf1d255b959630194a302335d848ff97bb07921eb6205b5f5a; \
+	SYFT_SHA256_arm64=6f6cdcdc695721d91ce756e3b5bc3e3416599c464101f5e32e9c3f33054ee6d9; \
+	arch=$(dpkg --print-architecture); \
+	case "$arch" in \
+		amd64) sha=$SYFT_SHA256_amd64 ;; \
+		arm64) sha=$SYFT_SHA256_arm64 ;; \
+		*) echo "no pinned scanner for ${arch}" >&2; exit 1 ;; \
+	esac; \
+	curl -fsSL -o /tmp/syft.tar.gz \
+		"https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_${arch}.tar.gz"; \
+	echo "${sha}  /tmp/syft.tar.gz" | sha256sum -c -; \
+	tar -xzf /tmp/syft.tar.gz -O syft > /usr/local/bin/syft; \
+	chmod 0755 /usr/local/bin/syft; \
+	rm -f /tmp/syft.tar.gz; \
+	syft --version | grep -qw "$SYFT_VERSION"
+
+# No entrypoint; the caller provides the command.
+CMD ["bash"]

@@ -46,4 +46,24 @@ expected=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$manifest" | grep -v '^$' | s
 t_eq_text "the installed package set is exactly the tracked manifest" \
 	"$installed" "$expected"
 
+# And every one of them arrived intact. A removal dpkg refused leaves the
+# package installed with its desired state recording the refusal — `purge ok
+# installed` rather than `install ok installed` — which a build step that
+# swallowed the error turns into a package shipping against an explicit
+# decision to remove it. Asserted on the whole database, not on the packages
+# somebody thought to check: the failure is silent by construction.
+if statuses=$(img_package_statuses "$IMG_SPEC"); then
+	odd=$(printf '%s\n' "$statuses" | grep -v ' install ok installed$') || true
+	if [ -n "$odd" ]; then
+		mapfile -t lines <<<"$odd"
+		t_fail "every package in the database is installed and nothing else" \
+			"${lines[@]}"
+	else
+		t_pass "every package in the database is installed and nothing else"
+	fi
+else
+	t_fail "every package in the database is installed and nothing else" \
+		"nothing at ${EXPECT_VAR_LOWERDIR}/lib/dpkg/status"
+fi
+
 t_done

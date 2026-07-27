@@ -1,0 +1,131 @@
+# METABEGIN
+# X-Env-Layer-Name: brenn-cleanup
+# X-Env-Layer-Category: base
+# X-Env-Layer-Desc: Removes what the device family layers install and this
+#  product does not want: the bootloader-updater package chain, which drags in
+#  sudo, and the enablement links for services that do nothing on a read-only
+#  A/B appliance.
+# X-Env-Layer-Version: 1.0.0
+# X-Env-Layer-Requires: device-user-admin,
+#  rpi-device-secpolicy
+# METAEND
+---
+# Requiring the two layers whose work this undoes is what orders these hooks
+# after them.
+mmdebstrap:
+  customize-hooks:
+    - |-
+      #
+      # The bootloader-updater chain, out — and sudo with it.
+      #
+      # The device family layer installs rpi-eeprom unconditionally, and its
+      # dependencies reach sudo. Upstream purges sudo with `|| true`, and the
+      # purge is refused: sudo's own pre-removal script stops a removal on a
+      # system whose root account has no password, on the reasoning that it is
+      # the administrator's last way in. That reasoning does not hold here —
+      # root is reachable over key-only SSH and over the serial console, and
+      # a passwordless root account is what this image is for — so the refusal
+      # is overridden rather than worked around. Upstream's `|| true`
+      # swallowed it instead, and sudo shipped, recorded as `purge ok
+      # installed`.
+      #
+      # Nothing is given up. This is a CM4: the shipped updater defaults
+      # CM4 self-update off, and the flashrom-over-SPI method it would use is
+      # not installed. The bootloader is updated over rpiboot at the bench,
+      # in the same session as a flash.
+      set -eu
+
+      # One reviewed list, purged in one invocation so dpkg orders the
+      # removals itself. Nothing outside the list depends on anything in it,
+      # so dpkg has no reason to refuse — and there is no `|| true` here, so a
+      # future package-tree change that gives it one fails the build and gets
+      # the list reviewed again.
+      purge="rpi-eeprom raspi-utils raspi-utils-core raspi-utils-dt
+      raspi-utils-eeprom raspi-utils-otp raspinfo sudo
+      net-tools usbutils pciutils pci.ids libpci3
+      binutils binutils-aarch64-linux-gnu binutils-common libbinutils
+      libctf-nobfd0 libctf0 libgprofng0 libsframe1 libjansson4
+      perl perl-modules-5.40 libperl5.40 libgdbm6t64 libgdbm-compat4t64
+      kms++-utils libkms++0 libdrm2 libdrm-common libfmt10
+      device-tree-compiler libfdt1 libdtovl0 libgpiolib0
+      python3-pycryptodome libyaml-0-2"
+
+      # Purging a package that is not installed is a dpkg warning, not an
+      # error. A hook that ran before the chain was installed would therefore
+      # succeed while doing nothing, and the chain would arrive behind it.
+      state=$(chroot "$1" dpkg-query -W -f='${db:Status-Status}' rpi-eeprom \
+        2>/dev/null) || state=unknown
+      if [ "$state" != installed ]; then
+        echo "brenn-cleanup: rpi-eeprom is '${state}', not installed:" \
+          "this hook is running before the layer that installs it" >&2
+        exit 1
+      fi
+
+      # Word-split on purpose: $purge is a list of package names. The variable
+      # is what sudo's pre-removal script documents as the way to say the
+      # refusal above has been considered; it reaches dpkg's maintainer
+      # scripts because chroot passes the environment through.
+      SUDO_FORCE_REMOVE=yes chroot "$1" dpkg --purge $purge
+
+      left=$(chroot "$1" dpkg-query -W -f='${Package} ${db:Status-Status}\n' |
+        awk -v names="$purge" '
+          BEGIN {
+            n = split(names, a, /[ \t\n]+/)
+            for (i = 1; i <= n; i++) if (a[i] != "") want[a[i]] = 1
+          }
+          $2 != "not-installed" && ($1 in want) { print $1 }
+        ')
+      if [ -n "$left" ]; then
+        echo "brenn-cleanup: still installed after the purge:" >&2
+        printf '%s\n' "$left" | sed 's/^/  /' >&2
+        exit 1
+      fi
+
+      if [ -e "$1/usr/bin/sudo" ]; then
+        echo "brenn-cleanup: /usr/bin/sudo survived the purge" >&2
+        exit 1
+      fi
+
+      # The service the family layer enabled, and the link that enabled it.
+      # A dangling link is not an inert one: systemd reports it as a failed
+      # dependency on every boot.
+      for path in \
+        /usr/lib/systemd/system/rpi-eeprom-update.service \
+        /etc/systemd/system/multi-user.target.wants/rpi-eeprom-update.service; do
+        if [ -e "$1$path" ] || [ -L "$1$path" ]; then
+          echo "brenn-cleanup: ${path} survived the purge" >&2
+          exit 1
+        fi
+      done
+    - |-
+      #
+      # Services nobody chose, unwanted.
+      #
+      # These arrive enabled by their packages' systemd presets. Each one is
+      # either a no-op or an actively wrong thing to run here: the apt timers
+      # schedule package work on an image that updates as a signed A/B slot,
+      # the dpkg database backup writes into a /var that is RAM and is lost
+      # at every boot, and the e2scrub pair is LVM machinery on an image with
+      # no LVM. Removing the link is what stops the unit being pulled in.
+      #
+      # fstrim.timer is deliberately not here: weekly trim of the writable
+      # partitions is flash-health work this appliance wants.
+      set -eu
+      for link in \
+        timers.target.wants/apt-daily.timer \
+        timers.target.wants/apt-daily-upgrade.timer \
+        timers.target.wants/dpkg-db-backup.timer \
+        timers.target.wants/e2scrub_all.timer \
+        multi-user.target.wants/e2scrub_reap.service; do
+        path="$1/etc/systemd/system/${link}"
+        if [ ! -L "$path" ]; then
+          echo "brenn-cleanup: no enablement link at ${link}:" \
+            "the packaging that created it has changed" >&2
+          exit 1
+        fi
+        rm "$path"
+        if [ -e "$path" ] || [ -L "$path" ]; then
+          echo "brenn-cleanup: ${link} is still there after removing it" >&2
+          exit 1
+        fi
+      done

@@ -39,7 +39,12 @@ device:
 
   # No sudo, in any form. Anything needing privilege belongs in the image,
   # where it is signed and reversible, not in a payload pulled over the
-  # network. The builder purges the sudo package outright at this setting.
+  # network.
+  #
+  # This setting is the account half — no sudoers entry, no admin group. It
+  # does not remove the package: the builder's purge at this setting fails
+  # silently. The brenn-cleanup layer is what removes sudo, along with the
+  # package chain that pulled it in.
   user1sudo: none
 
 layer:
@@ -55,3 +60,8 @@ layer:
   health: brenn-health
   rauc: brenn-rauc
   app: brenn-app
+
+  # Takes back out what the device family layers install and this product does
+  # not want. Last of the shared layers; the layer itself declares what it has
+  # to run after.
+  cleanup: brenn-cleanup

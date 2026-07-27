@@ -45,15 +45,28 @@ done <<<"$EXPECT_SSHD_SETTINGS"
 matched=$(img_sshd_keywords "$resolved" | grep -cx match) || true
 t_eq "the resolved configuration has no Match block" "$matched" 0
 
-# The drop-in has to be first in the include order for any of the above to be
-# what it is. Asserted separately so that a failure says which of the two went
-# wrong: the values, or the order they were obtained in.
-first=$(printf '%s\n' "$resolved" | grep -n . | head -n1)
-if printf '%s' "$first" | grep -qF "brenn-os sshd policy"; then
-	t_pass "the brenn configuration is the first sshd reads"
+# The drop-in has to be reached before anything sets a keyword, for any of the
+# above to be what it is. Asserted separately so that a failure says which of
+# the two went wrong: the values, or the order they were obtained in.
+#
+# The question is about settings, not about text: the packaged configuration
+# opens with a comment header, and a comment resolves nothing. So the marker is
+# located in the resolved stream and every line ahead of it is required to set
+# no keyword at all — which is the property the values above rest on, and which
+# no comment, ours or the distribution's, can satisfy on its own.
+marker=$(printf '%s\n' "$resolved" | grep -nF "brenn-os sshd policy" | head -n1)
+if [ -z "$marker" ]; then
+	t_fail "the brenn configuration is in what sshd reads" \
+		"no drop-in marker in the resolved configuration"
 else
-	t_fail "the brenn configuration is the first sshd reads" \
-		"first line resolved: ${first}"
+	before=$(printf '%s\n' "$resolved" | head -n $((${marker%%:*} - 1)))
+	set_ahead=$(img_sshd_keywords "$before" | grep -c .) || true
+	if [ "$set_ahead" -eq 0 ]; then
+		t_pass "nothing sets a keyword before the brenn configuration"
+	else
+		t_fail "nothing sets a keyword before the brenn configuration" \
+			"$(printf '%s\n' "$before" | grep -n . | sed 's/^/ahead: /')"
+	fi
 fi
 
 # No host identity in the image. The package generates a key pair when it is

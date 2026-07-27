@@ -49,18 +49,60 @@ that test fails on purpose, saying so — and the fork, its layer, and the
 
 ## `local-image-lane`
 
-`make image` needs an arm64 Debian host, and the maintainer's workstation is
-not one, so the only machine that builds an image today is CI. That inverts the
-posture the rest of this repo is built on, where the local gate is the
-authority and CI is the backstop: for the image lane there is no local gate at
-all, and a build failure is only ever discovered after a push.
+`make image` needs an arm64 Debian host, so on a host that is not one the
+builder runs in a pinned container (`containers/builder/Containerfile`) with the
+repo bind-mounted and arm64 execution riding the host's binfmt_misc
+registration. That much is built, and a workstation that is neither arm64 nor
+Debian-family builds an image with it.
 
-Deferred because the fix is infrastructure — an arm64 virtual machine, or a
-binfmt/qemu-user-static container lane — rather than a change to the build, and
-because the pinned builder makes the CI build itself reproducible.
+What is not yet shown is the half this entry exists for: that the local build
+and CI's native arm64 build produce the same image. Until they are compared, a
+green local build is evidence about the local lane only, and the posture the
+rest of the repo is built on — the local gate is the authority, CI is the
+backstop — still does not hold for the image.
+
+Deferred because what remains is a cross-lane comparison in CI, at manifest
+level first and hardening to full-image equality once the two lanes are observed
+to agree, rather than a change to the build. That comparison is now built — the
+`image-container` and `image-identity` jobs, over what
+`scripts/image-manifest.sh` records — and what it reports on its first runs is
+the measurement this entry is waiting on.
 
 Done when `make image` runs on a developer workstation that is not an arm64
 Debian host and produces the same image CI does.
+
+## `ci-container-toolchain`
+
+CI's native image job installs the builder's host dependencies with the
+submodule's own `install_deps.sh`, which takes whatever version the runner's
+archive serves on the day. It is the last unpinned toolchain in the image lane:
+the container lane pins its base by digest, its packages by snapshot timestamp,
+and its SBOM scanner by version and digest, and the same build run through it
+would close the gap for CI too.
+
+Deferred because moving the release-shaped lane onto the container is only worth
+doing once the container lane has a record of producing the same image the
+native one does, which is what the `image-identity` job is there to establish.
+
+Done when no CI job invokes `install_deps.sh` and the native image build runs in
+the pinned container.
+
+## `vendor-enabled-units`
+
+`tests/image/190-enabled-units.test.sh` reads the enablement links under
+`/etc/systemd/system` whole and holds them to a reviewed set, which is what
+catches an installed package's preset putting a service on every boot. Packages
+can also ship static `.wants` links of their own under
+`/usr/lib/systemd/system`, and that tree is not read: a package that enables
+itself that way starts on the device with nothing in the suite saying so.
+
+Deferred because closing it means recording a second reviewed set — the image
+carries over fifty such links from the Debian base — and this repo's bring-up
+discipline puts that review in front of a person rather than letting a first run
+bake in whatever it happened to find.
+
+Done when the vendor tree's enablement links are reviewed and asserted as a
+whole set, the way the `/etc` ones are.
 
 ## `erofs-root`
 

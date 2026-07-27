@@ -10,6 +10,10 @@
 # `--` are passed through to the builder, which is how a local overlay changes
 # a knob without editing the tree.
 #
+# The builder itself needs a Debian host, so on a host that is not one it runs
+# in the pinned container this repo builds. Which lane is taken, where the
+# build's scratch space goes, and how to override either: scripts/lib/build-lane.sh.
+#
 # Output lands under work/, which is build output and is not tracked.
 
 set -euo pipefail
@@ -18,6 +22,9 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 builder="${repo_root}/rpi-image-gen/rpi-image-gen"
 srcdir="${repo_root}/image"
 workdir="${repo_root}/work"
+
+# shellcheck source=scripts/lib/build-lane.sh
+. "${repo_root}/scripts/lib/build-lane.sh"
 
 list_profiles() {
 	local f name
@@ -64,32 +71,70 @@ if [ ! -x "$builder" ]; then
 
 	It is a submodule pinned to an exact commit. Fetch it with:
 	    git submodule update --init --recursive
-
-	Its own host dependencies are installed by rpi-image-gen/install_deps.sh.
 	EOF
 	exit 1
 fi
 
-# The build's one unpinned input. Its SBOM step uses a scanner from the host if
-# there is one and downloads whatever its installer serves if there is not, so a
-# scanner on PATH is what keeps the build's inputs pinned. CI installs one at a
-# version and digest it pins; locally this is a notice rather than a refusal,
-# because the scanner describes the build rather than shaping it.
+mkdir -p "$workdir"
+
+lane_load_conf
+lane_scratch_setup
+lane=$(lane_select)
+
+# The builder resolves layers, configs and hooks relative to -S, so every
+# brenn-os-specific input reaches it through that one directory.
+#
+# TODO(local-image-lane): the container lane is the half of this that makes a
+# build possible on a host the builder does not support; what remains is
+# showing that what it produces is what CI's native lane produces.
+if [ "$lane" = container ]; then
+	lane_container_check || lane_die "$lane_unmet"
+	tag=$(lane_image_tag)
+
+	# Inside the container this takes the native lane, which can now pass
+	# the dependency gate. The scratch and apt-cache knobs arrive as
+	# container paths, so the one resolution above governs both lanes.
+	lane_container_argv "$tag" \
+		"${lane_container_repo}/scripts/build-image.sh" "$profile" "$@"
+
+	if lane_dry_run; then
+		lane_report container "${lane_argv[@]}"
+		exit 0
+	fi
+
+	lane_ensure_image "$tag"
+	exec "${lane_argv[@]}"
+fi
+
+# The build's one unpinned input on this lane. A scanner on PATH keeps the
+# build's SBOM input pinned; without one the build fetches whatever version the
+# network serves. CI and the container carry pinned versions; locally this is a
+# notice rather than a refusal, because the scanner describes the build rather
+# than shaping it.
 if ! command -v syft >/dev/null 2>&1; then
 	echo "build-image: syft is not installed — the build will download one over the network." >&2
 	echo "build-image: install the version .github/workflows/ci.yml pins to keep the build's inputs pinned." >&2
 fi
 
-mkdir -p "$workdir"
+# The builder takes overrides as key=value after `--`, last one winning, so
+# anything the caller passes outranks what is set here.
+overrides=()
+if [ -n "$BRENN_APT_CACHEDIR" ]; then
+	overrides+=("IGconf_sys_apt_cachedir=${BRENN_APT_CACHEDIR}")
+fi
+if [ $# -gt 0 ] && [ "$1" = "--" ]; then
+	shift
+fi
+overrides+=("$@")
 
-# The builder resolves layers, configs and hooks relative to -S, so every
-# brenn-os-specific input reaches it through that one directory.
-#
-# TODO(local-image-lane): this needs an arm64 Debian host and dies here on
-# anything else, so a workstation that is not one has no way to run the image
-# lane before CI does.
-exec "$builder" build \
-	-S "$srcdir" \
-	-c "$config" \
-	-B "$workdir" \
-	"$@"
+argv=("$builder" build -S "$srcdir" -c "$config" -B "$workdir")
+if [ ${#overrides[@]} -gt 0 ]; then
+	argv+=(-- "${overrides[@]}")
+fi
+
+if lane_dry_run; then
+	lane_report native "${argv[@]}"
+	exit 0
+fi
+
+exec "${argv[@]}"

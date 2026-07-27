@@ -3,8 +3,16 @@
 # Everything here reads the image file directly — partition table via sfdisk,
 # vfat contents via mtools at a byte offset. Nothing loop-mounts and nothing
 # needs root, so the image suite runs the same way on a workstation as in CI.
+#
+# The decoders for the formats the cross-lane manifest also reads — the sfdisk
+# dump, the ext4 reader's location, the dpkg database — come from
+# scripts/lib/image-read.sh. What is added here is the suite's half: skipping
+# and failing, the expectations, and the readers that only an assertion wants.
 
 # shellcheck shell=bash
+
+# shellcheck source=scripts/lib/image-read.sh
+. "${BRENN_REPO_ROOT}/scripts/lib/image-read.sh"
 
 # Expected values per profile live next to the tests, so an assertion failure
 # points at one file to reconcile against the hardware.
@@ -52,9 +60,10 @@ img_open_system_root() {
 }
 
 # Fills IMG_SECTOR_SIZE and the parallel arrays IMG_PART_NAME / IMG_PART_START /
-# IMG_PART_SIZE, all in partition-table order.
+# IMG_PART_SIZE, all in partition-table order, from the normalised table the
+# manifest is recorded from.
 img_read_table() {
-	local img=$1 line rest
+	local img=$1 line sector
 	t_require_cmd sfdisk
 
 	IMG_SECTOR_SIZE=512
@@ -64,33 +73,25 @@ img_read_table() {
 
 	while IFS= read -r line; do
 		case "$line" in
-			"sector-size:"*)
-				IMG_SECTOR_SIZE=${line#sector-size:}
-				IMG_SECTOR_SIZE=${IMG_SECTOR_SIZE// /}
+			"table "*)
+				# The decoder supplies the 512-byte default when a dump
+				# states no sector size, so both readers of one image
+				# resolve the same offsets.
+				sector=$(imgread_field "$line" sector-size) || sector=
+				[ -z "$sector" ] || IMG_SECTOR_SIZE=$sector
 				;;
-			*" : start="*)
-				rest=${line#*: }
-				IMG_PART_START+=("$(img_field "$rest" start)")
-				IMG_PART_SIZE+=("$(img_field "$rest" size)")
-				IMG_PART_NAME+=("$(img_field "$rest" name)")
+			"partition "*)
+				IMG_PART_START+=("$(imgread_field "$line" start)")
+				IMG_PART_SIZE+=("$(imgread_field "$line" size)")
+				IMG_PART_NAME+=("$(imgread_field "$line" name)")
 				;;
 		esac
-	done < <(sfdisk --dump "$img" 2>/dev/null)
+	done < <(imgread_table "$(sfdisk --dump "$img" 2>/dev/null)")
 
 	if [ ${#IMG_PART_NAME[@]} -eq 0 ]; then
 		t_fail "read the partition table from ${img}"
 		t_done
 	fi
-}
-
-# One `key=value` out of an sfdisk dump line. Values may be quoted or padded.
-img_field() {
-	local rest=$1 key=$2 v
-	v=$(printf '%s\n' "$rest" | tr ',' '\n' |
-		sed -n "s/^[[:space:]]*${key}=[[:space:]]*//p" | head -n1)
-	v=${v%\"}
-	v=${v#\"}
-	printf '%s' "$v"
 }
 
 img_part_index() {
@@ -122,21 +123,13 @@ img_vfat_cat() {
 	MTOOLS_SKIP_CHECK=1 mtype -i "${img}@@${offset}" "::${path}" | tr -d '\r'
 }
 
-# Locate the ext4 reader and set IMG_DEBUGFS. debugfs ships in /sbin on some
-# distributions and /usr/sbin on others, and is not always on a non-root PATH,
-# so this looks rather than assuming.
+# Locate the ext4 reader and set IMG_DEBUGFS.
 #
 # Called at top level for the same reason img_resolve is: skipping has to end
 # the test, which it cannot do from inside a command substitution.
 img_require_ext4() {
-	local candidate
-	for candidate in debugfs /usr/sbin/debugfs /sbin/debugfs; do
-		if command -v "$candidate" >/dev/null 2>&1; then
-			IMG_DEBUGFS=$candidate
-			return
-		fi
-	done
-	t_skip "requires debugfs (e2fsprogs), which is not installed"
+	IMG_DEBUGFS=$(imgread_debugfs) ||
+		t_skip "requires debugfs (e2fsprogs), which is not installed"
 }
 
 # The debugfs handle for a named ext4 partition: the image file plus a byte
@@ -176,11 +169,17 @@ img_ext4_ls() {
 		awk -F/ 'NF >= 7 && $6 != "." && $6 != ".." { print $6 }'
 }
 
-# Where a symlink points. Only short targets are stored in the inode, which is
-# all any link in this image uses.
+# Where a symlink points. A target short enough is held in the inode; one that
+# is not is stored in a block like a file's content and read the same way. The
+# type is checked before falling back, so that reading a regular file cannot
+# pass for reading a link.
 img_ext4_link() {
 	local dest
 	dest=$(img_ext4_stat "$1" "$2" | sed -n 's/^Fast link dest: "\(.*\)"$/\1/p')
+	if [ -z "$dest" ]; then
+		[ "$(img_ext4_type "$1" "$2")" = symlink ] || return 1
+		dest=$(img_ext4_request "$1" "cat $2")
+	fi
 	[ -n "$dest" ] || return 1
 	printf '%s' "$dest"
 }
@@ -203,22 +202,38 @@ img_installed_packages() {
 	local status
 	status=$(img_ext4_cat "$1" "${EXPECT_VAR_LOWERDIR}/lib/dpkg/status") || return 1
 	[ -n "$status" ] || return 1
-	img_dpkg_installed "$status"
+	imgread_dpkg_installed "$status"
 }
 
-# The parser half of the above, over the database's content. Split out so that
-# the host lane can hold it to its rules without an image: every verdict in the
-# image suite is only as good as the parsing that produced it.
-#
-# Stanzas that were never unpacked carry no version and are not installed.
-img_dpkg_installed() {
-	printf '%s\n' "$1" | awk '
-		/^Package: / { pkg = $2; ver = ""; ok = 0 }
-		/^Status: / { ok = ($0 ~ / installed$/) }
-		/^Version: / { ver = $2 }
-		/^$/ { if (ok && pkg != "" && ver != "") print pkg, ver; pkg = ""; ver = ""; ok = 0 }
-		END { if (ok && pkg != "" && ver != "") print pkg, ver }
-	'
+# Every stanza in the shipped package database as "<name> <status>", whatever
+# the status says. The reader above answers "what is installed"; this answers
+# "what does the database record", which is a different question — a package
+# whose removal was refused stays installed and says so in a status nobody
+# reads unless it is asserted on.
+img_package_statuses() {
+	local status
+	status=$(img_ext4_cat "$1" "${EXPECT_VAR_LOWERDIR}/lib/dpkg/status") || return 1
+	[ -n "$status" ] || return 1
+	imgread_dpkg_statuses "$status"
+}
+
+# Every enablement link in the image, as "<target>.wants/<unit>", one per line.
+# A unit runs because something wants it, and what wants it is a symlink in a
+# directory named for the target — which is how a package's install-time preset
+# adds a service to every boot without anything in this repository saying so.
+img_enabled_units() {
+	local spec=$1 dir=$2 entry unit
+	while IFS= read -r entry; do
+		case "$entry" in
+			*.wants | *.requires) ;;
+			*) continue ;;
+		esac
+		[ "$(img_ext4_type "$spec" "${dir}/${entry}")" = directory ] || continue
+		while IFS= read -r unit; do
+			[ -n "$unit" ] || continue
+			printf '%s/%s\n' "$entry" "$unit"
+		done < <(img_ext4_ls "$spec" "${dir}/${entry}")
+	done < <(img_ext4_ls "$spec" "$dir")
 }
 
 # Paths under <dir> in the root filesystem whose contents contain <needle>, one
