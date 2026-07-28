@@ -5,11 +5,12 @@
 #
 # Two of the native lane's steps reach into the build's output by glob: the
 # bundle round trip and the SBOM upload. Neither can spell the paths out,
-# because the directory names carry a version component the build derives from
-# `git describe` — a tag or a commit on a runner with history, a date on one
-# without, and different again inside the container. A glob that matches nothing
-# is invisible until the build in front of it succeeds for the first time, which
-# on a lane this slow can be months.
+# because the directory names carry a version component the build is given as an
+# input — BRENN_IMAGE_VERSION, resolved by the wrapper on the host, and
+# constrained to a charset rather than to a shape, so a tag, a commit
+# description, or whatever else a caller names. A glob that matches nothing is
+# invisible until the build in front of it succeeds for the first time, which on
+# a lane this slow can be months.
 #
 # Where a build puts those files is not this repo's choice; it is the builder's,
 # declared in the layer metadata of the pinned submodule, which is in the tree
@@ -165,9 +166,10 @@ t_eq "and verifies the bundle it just packed from one" \
 t_eq "an SBOM the upload cannot find fails the job" \
 	"$(printf '%s\n' "$sbom_step" | grep -c '^          if-no-files-found: error$')" 1
 
-# Both spellings the version component takes: what `git describe` answers where
-# the checkout has history, and the date the builder falls back to where it does
-# not. A path that assumes either one is a lane that works on one runner.
+# Two dissimilar version strings, because the globs have to hold for any of
+# them: the wrapper resolves a description of the checkout, and a caller may
+# name anything the charset admits instead. A path that assumes one shape is a
+# lane that works on one build.
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

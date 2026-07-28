@@ -101,6 +101,21 @@ Four, in order of how much they need:
 | `make test-image` | a built image | `tests/image` — what the build produced, read out of the image file directly |
 | `make test-device` | a provisioned unit | `tests/device` — what a running unit actually does |
 
+Everything a build produces — the image, the per-version chroot and deploy
+directories, the build scratch, the apt package cache — lands under `work/`,
+which is gitignored and gigabyte-scale. `make clean` reclaims it. A plain
+`rm -rf work` generally will not: builds run inside a user namespace, so files
+the build creates as anything other than root come out owned by sub-uids of the
+invoking user, in directories that user cannot traverse, and the removal fails
+partway on files that look like his own. `make clean` removes them from inside
+such a namespace. A scratch directory or apt cache pointed outside `work/` by
+its knob is named and left alone, so an out-of-repo cache survives a reset
+without re-downloading the archive. Do not clean, by `make clean` or by hand,
+while a build is running. `make test-clean` asserts what `make clean` would
+resolve and which removal it would start with, and removes nothing; it is a lane
+of its own rather than part of `make check`, because the gate should not be
+calling the script that empties the build area.
+
 The device lane talks to a real device over SSH, so it needs to be told which
 one. That is site information and never enters the tree: export
 `BRENN_DEVICE_HOST` (with `BRENN_DEVICE_USER`, default `root`, and

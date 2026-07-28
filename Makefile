@@ -20,9 +20,11 @@ help:
 	@echo "  make check         the gate (shell lint, layer metadata, host tests), same contents CI runs"
 	@echo "  make image         build an image        (PROFILE=$(PROFILE))"
 	@echo "  make bundle        pack the last build into a signed update bundle"
+	@echo "  make clean         remove work/ — the build output, its scratch and its caches"
 	@echo "  make test-host     assert against the tree — no image, no device"
 	@echo "  make test-image    assert against the built image"
 	@echo "  make test-device   assert against a live unit over SSH (needs a target)"
+	@echo "  make test-clean    assert how 'make clean' would route — reports, removes nothing"
 	@echo "  make setup-hooks   wire git at .githooks, check tooling (once per clone)"
 	@echo "  make scrub-tree    whole-tree secret sweep — the sweep a clean tree is declared on"
 
@@ -52,6 +54,14 @@ image:
 bundle:
 	scripts/make-bundle.sh --profile $(PROFILE)
 
+# Reclaims the build area. A build runs inside a user namespace and leaves files
+# owned by sub-uids of the invoking user, which a plain `rm -rf work` cannot
+# remove, so the removal happens from inside such a namespace. Scratch or an apt
+# cache a knob points outside work/ are named and left alone.
+.PHONY: clean
+clean:
+	scripts/clean-work.sh
+
 # The parts of the system that are ordinary programs — the boot-time decisions
 # above all — exercised against a temporary tree. No image, no hardware, and
 # fast enough to be part of the gate, which is the point: a decision that only
@@ -78,6 +88,17 @@ test-image:
 .PHONY: test-device
 test-device:
 	BRENN_PROFILE=$(PROFILE) tests/run.sh device
+
+# What `make clean` resolves and which removal it would start with, asserted
+# against the real repo root in dry-run mode — nothing is removed. A lane of its
+# own, and deliberately not part of `check`: the gate runs on every commit, and
+# the script under assertion is the one that removes the build area, so the gate
+# does not call it even to ask what it would do.
+#
+# TODO(clean-lane-ci): no automated gate runs this lane, here or in CI.
+.PHONY: test-clean
+test-clean:
+	tests/run.sh clean
 
 # Wire git at the tracked hooks dir and report any missing tooling. Idempotent;
 # run once per clone.

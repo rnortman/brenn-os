@@ -20,6 +20,8 @@
 #                           emulated build does not re-download the archive on
 #                           every run. Set, both lanes use the directory named;
 #                           the container mounts it if it is outside the repo
+#   BRENN_IMAGE_VERSION     the version string the product is built with;
+#                           default is a git description of the checkout
 #   BRENN_PODMAN            the podman to run (default podman)
 #   BRENN_PODMAN_RUN_FLAGS  extra flags for `podman run`, word-split
 #
@@ -50,14 +52,29 @@ lane_die() {
 	exit 1
 }
 
+# The non-empty lines of a captured command's output, in the named array. Every
+# caller here keeps a tool's own diagnosis to pass on line by line, and the
+# details of doing that — IFS, dropping blanks, what a trailing newline leaves
+# behind — are decided once here rather than once per site.
+lane_split_lines() {
+	local -n lane_split_dest=$1
+	local lane_split_line
+	lane_split_dest=()
+	while IFS= read -r lane_split_line; do
+		[ -n "$lane_split_line" ] || continue
+		lane_split_dest+=("$lane_split_line")
+	done <<<"$2"
+}
+
 # The knobs, resolved once. An exported value is the more specific statement of
 # intent and outranks the overlay file; the overlay outranks the default.
 lane_load_conf() {
-	local conf env_lane env_scratch env_cache env_podman env_flags
+	local conf env_lane env_scratch env_cache env_version env_podman env_flags
 	conf=${BRENN_BUILD_CONF:-${lane_repo_root}/.local/build.conf}
 	env_lane=${BRENN_BUILD_CONTAINER:-}
 	env_scratch=${BRENN_SCRATCH_DIR:-}
 	env_cache=${BRENN_APT_CACHEDIR:-}
+	env_version=${BRENN_IMAGE_VERSION:-}
 	env_podman=${BRENN_PODMAN:-}
 	env_flags=${BRENN_PODMAN_RUN_FLAGS:-}
 
@@ -69,6 +86,9 @@ lane_load_conf() {
 	BRENN_BUILD_CONTAINER=${env_lane:-${BRENN_BUILD_CONTAINER:-auto}}
 	BRENN_SCRATCH_DIR=${env_scratch:-${BRENN_SCRATCH_DIR:-${lane_repo_root}/work/scratch}}
 	BRENN_APT_CACHEDIR=${env_cache:-${BRENN_APT_CACHEDIR:-}}
+	# No default: an unset version stays empty so the lint path, which never
+	# needs a version, works on hosts that cannot produce one.
+	BRENN_IMAGE_VERSION=${env_version:-${BRENN_IMAGE_VERSION:-}}
 	BRENN_PODMAN=${env_podman:-${BRENN_PODMAN:-podman}}
 	BRENN_PODMAN_RUN_FLAGS=${env_flags:-${BRENN_PODMAN_RUN_FLAGS:-}}
 
@@ -79,6 +99,65 @@ lane_load_conf() {
 				"expected one of: auto never always"
 			;;
 	esac
+}
+
+# The version string the product is built with, resolved on the host so that
+# both lanes stamp the same one. The container has no git; without host-side
+# resolution the two lanes would version the same tree differently.
+#
+# --abbrev=12 fixes the abbreviation length, which git otherwise sizes from the
+# object store, so differently-shaped clones of one commit agree on it.
+#
+# Only the build calls this; the lint path never needs a version.
+lane_version_resolve() {
+	local from_git='' describe_err='' errfile
+
+	if [ -z "$BRENN_IMAGE_VERSION" ]; then
+		from_git=1
+		# git's own diagnosis is kept rather than discarded: the failures that
+		# happen on a real machine — a checkout owned by another uid, a pruned
+		# worktree, a damaged object store — are ones git names precisely and
+		# this function can only guess at.
+		errfile=$(mktemp)
+		BRENN_IMAGE_VERSION=$(git -C "$lane_repo_root" \
+			describe --tags --always --dirty --abbrev=12 2>"$errfile") ||
+			BRENN_IMAGE_VERSION=
+		describe_err=$(cat -- "$errfile")
+		rm -f -- "$errfile"
+	fi
+
+	# No fallback: a version that says nothing about the source is the defect
+	# this function exists to remove.
+	if [ -z "$BRENN_IMAGE_VERSION" ]; then
+		local -a why=()
+		lane_split_lines why "$describe_err"
+
+		lane_die "cannot describe ${lane_repo_root}, so the image has no version." \
+			"${why[@]}" \
+			"The version is baked into the root filesystem and names the update bundle," \
+			"so it is asked for rather than guessed. Either give the build a git and a" \
+			"checkout to describe, or name the version yourself:" \
+			"    BRENN_IMAGE_VERSION=<version> make image" \
+			"or the same assignment in .local/build.conf."
+	fi
+
+	# The value enters a shell-expansion context (the builder evaluates $( and
+	# ${ in overrides), so it must not contain shell metacharacters. The same
+	# charset keeps it path-safe for directory names and filenames. A computed
+	# value is held to it too: git accepts tag names carrying / and shell
+	# metacharacters, and describe hands them back verbatim.
+	if [[ ! $BRENN_IMAGE_VERSION =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+		if [ -n "$from_git" ]; then
+			lane_die "git describe returned '${BRENN_IMAGE_VERSION}', which cannot be an image version." \
+				"expected a letter or digit followed by letters, digits, and . _ + - only." \
+				"Nobody set this — it came from the checkout, so a tag name is the likely" \
+				"cause. Rename the tag, or name the version yourself:" \
+				"    BRENN_IMAGE_VERSION=<version> make image"
+		else
+			lane_die "BRENN_IMAGE_VERSION is '${BRENN_IMAGE_VERSION}'" \
+				"expected a letter or digit followed by letters, digits, and . _ + - only."
+		fi
+	fi
 }
 
 # Scratch space, pointed into the build area and exported.
@@ -192,9 +271,21 @@ lane_container_check() {
 # The image is named for the content of its definition, so editing the file or
 # bumping a pin in it invalidates the cached image rather than silently reusing
 # one built from an older definition.
+#
+# The digest is checked rather than assumed: an unreadable definition would
+# otherwise leave it empty and still spell a plausible tag, which names no image
+# and so reads, wherever tags are compared, as one every real image differs from.
 lane_image_tag() {
 	local digest
-	digest=$(sha256sum -- "${lane_repo_root}/containers/builder/Containerfile" | cut -c1-12)
+	digest=$(sha256sum -- "${lane_repo_root}/containers/builder/Containerfile" | cut -c1-12) || digest=
+	if [ -z "$digest" ]; then
+		# Reported and refused rather than exited on, so that a caller for whom
+		# the tag is incidental — the cleaner, naming superseded images after it
+		# has already reclaimed the disk — can carry on without one.
+		echo "${lane_prog}: cannot read ${lane_repo_root}/containers/builder/Containerfile, so the builder image cannot be named." >&2
+		echo "    The image is named for the content of its definition; its own error is above." >&2
+		return 1
+	fi
 	echo "brenn-os/builder:${digest}"
 }
 
@@ -216,16 +307,15 @@ lane_ensure_image() {
 # may still want to build against is theirs to keep — but a year of them is not
 # something to discover as an unattributed disk-full.
 lane_report_superseded() {
-	local tag=$1 stale line
+	local tag=$1 stale
+	local -a others=()
 	stale=$("$BRENN_PODMAN" images --format '{{.Repository}}:{{.Tag}}' -- brenn-os/builder 2>/dev/null |
 		grep -vxF -- "$tag" || true)
-	[ -n "$stale" ] || return 0
+	lane_split_lines others "$stale"
+	[ ${#others[@]} -gt 0 ] || return 0
 
 	echo "${lane_prog}: builder images from earlier definitions are still in podman storage:" >&2
-	while IFS= read -r line; do
-		[ -n "$line" ] || continue
-		echo "    ${line}" >&2
-	done <<<"$stale"
+	printf '    %s\n' "${others[@]}" >&2
 	echo "${lane_prog}: remove the ones you no longer need with: ${BRENN_PODMAN} rmi <image>" >&2
 }
 
@@ -283,6 +373,8 @@ lane_container_argv() {
 	lane_argv+=(--env BRENN_BUILD_CONTAINER=never)
 	lane_argv+=(--env "BRENN_SCRATCH_DIR=${scratch_in_container}")
 	lane_argv+=(--env "BRENN_APT_CACHEDIR=${cache_in_container}")
+	# Resolved and validated by lane_version_resolve before this point.
+	lane_argv+=(--env "BRENN_IMAGE_VERSION=${BRENN_IMAGE_VERSION}")
 
 	if [ -n "$BRENN_PODMAN_RUN_FLAGS" ]; then
 		local -a extra=()
@@ -304,6 +396,7 @@ lane_report() {
 	echo "scratch-fstype: ${lane_scratch_fstype}"
 	echo "tmpdir-child: $(bash -c 'printf "%s" "${TMPDIR-}"')"
 	echo "apt-cachedir: ${BRENN_APT_CACHEDIR}"
+	echo "version: ${BRENN_IMAGE_VERSION}"
 	echo "cmd: $*"
 }
 

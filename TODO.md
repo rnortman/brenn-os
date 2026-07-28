@@ -104,6 +104,24 @@ bake in whatever it happened to find.
 Done when the vendor tree's enablement links are reviewed and asserted as a
 whole set, the way the `/etc` ones are.
 
+## `clean-lane-ci`
+
+`make test-clean` is the one test lane nothing automated runs. It is a dry run
+throughout and needs neither a device nor a built image, so any runner could
+carry it — but it asserts `scripts/clean-work.sh`, which is the script that
+empties the build area, and it is deliberately kept out of `make check` for that
+reason. Meanwhile that suite is the only thing holding the script's use of
+`scripts/lib/build-lane.sh`, so a rename or a precedence change in that library
+can pass every gate and still break the one script somebody reaches for with a
+full disk.
+
+Deferred because whether a gate may call that script at all — and if so, which
+gate — is a decision for the maintainer rather than a wiring detail, and it is
+better made after the lane has been run by hand at least once.
+
+Done when CI runs `make test-clean`, or the decision to leave it a
+run-it-yourself lane is recorded here in place of this entry.
+
 ## `erofs-root`
 
 The root filesystem is read-only ext4. The image layout supports erofs behind a

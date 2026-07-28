@@ -81,6 +81,10 @@ lane_load_conf
 lane_scratch_setup
 lane=$(lane_select)
 
+# Must run before either lane assembles its command, so both lanes build the
+# same version of the same tree.
+lane_version_resolve
+
 # The builder resolves layers, configs and hooks relative to -S, so every
 # brenn-os-specific input reaches it through that one directory.
 #
@@ -116,9 +120,11 @@ if ! command -v syft >/dev/null 2>&1; then
 	echo "build-image: install the version .github/workflows/ci.yml pins to keep the build's inputs pinned." >&2
 fi
 
-# The builder takes overrides as key=value after `--`, last one winning, so
-# anything the caller passes outranks what is set here.
-overrides=()
+# Overrides are key=value after `--`, last one winning; the caller's own
+# overrides go last so they outrank what is set here. The artefact version
+# names the chroot, deploy directories, and SBOM, so setting it here makes
+# the image version the single source for all of them.
+overrides=("IGconf_artefact_version=${BRENN_IMAGE_VERSION}")
 if [ -n "$BRENN_APT_CACHEDIR" ]; then
 	overrides+=("IGconf_sys_apt_cachedir=${BRENN_APT_CACHEDIR}")
 fi
