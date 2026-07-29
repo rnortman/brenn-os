@@ -16,7 +16,13 @@
 #
 # What a regular file cannot reach is the block-device-only work: dropping a
 # buffer cache and rereading a partition table, neither of which decides whether
-# a transfer was correct. Direct I/O is not in that set — whether the tool reads
+# a transfer was correct. The label lookup that follows such a reread, and the
+# next-step advice it feeds, are reached another way — the lane sources the tool
+# and calls those two functions directly, because what they print is the one
+# thing the install procedure promises the operator by name and a file target
+# never enters the branch that produces it.
+#
+# Direct I/O is not in that set — whether the tool reads
 # with O_DIRECT here depends on the filesystem the temporary tree lands on, so
 # rather than assume either way the lane asserts which one the tool chose
 # against a probe of the same file.
@@ -24,6 +30,10 @@
 # Both verification paths get an injected fault, because a verify that cannot
 # fail is not a verify. The fault comes from a shim over dd that corrupts a file
 # after a transfer, which is what an unreliable USB link does.
+#
+# The last section leaves the script for the two runbooks that print the same
+# provisioning command: what the tool hands the operator only holds if the page
+# they are reading agrees with it.
 
 set -uo pipefail
 
@@ -37,7 +47,7 @@ if [ ! -x "$flash" ]; then
 	t_done
 fi
 
-t_require_cmd zstd sha256sum unshare dd find
+t_require_cmd zstd sha256sum unshare dd find awk
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -58,11 +68,23 @@ cat >"${bin}/lsblk" <<'SHIM'
 # -d is honoured rather than ignored, because the mount guard's whole point is
 # that it asks without -d and so hears about the children too. A shim that
 # answered both the same would let that distinction be edited away unnoticed.
+if [ -n "${SHIM_CALL_LOG-}" ]; then
+	echo "lsblk $*" >>"$SHIM_CALL_LOG"
+fi
 field=""
 prev=""
 whole=0
+dev=""
 for a in "$@"; do
-	if [ "$prev" = "-o" ]; then field=$a; fi
+	if [ "$prev" = "-o" ]; then
+		field=$a
+	else
+		# Whatever is asked about, as opposed to a flag or a flag's value.
+		case "$a" in
+			-*) ;;
+			*) dev=$a ;;
+		esac
+	fi
 	if [ "$a" = "-d" ]; then whole=1; fi
 	prev=$a
 done
@@ -85,8 +107,41 @@ case "$field" in
 			printf '%s\n' "${SHIM_MOUNTPOINTS-}"
 		fi
 		;;
+	# The partition table as the tool asks about it after writing one: one line
+	# per device, path then label. An empty answer is what a real lsblk gives
+	# while udev is still probing, and is the shape the wrong lookup mistook for
+	# "no such partition".
+	#
+	# Answered for the device asked about and no other, the way a real lsblk
+	# given a device is. A query naming none answers for every attached medium,
+	# so a lookup that dropped the device from its arguments would be handed the
+	# whole workstation here — which is the ambiguity this tool exists to avoid.
+	PATH,PARTLABEL)
+		if [ -z "$dev" ]; then
+			printf '%s\n' "${SHIM_PATHLABELS-}"
+		else
+			printf '%s\n' "${SHIM_PATHLABELS-}" | while IFS= read -r row; do
+				case "${row%% *}" in
+					"$dev"*) printf '%s\n' "$row" ;;
+				esac
+			done
+		fi
+		;;
 	*) exit 1 ;;
 esac
+SHIM
+
+# udev, as far as anything here needs it: something to wait for that answers.
+# It is logged rather than merely tolerated, because the order of the wait and
+# the query is the property under assertion. Its status is a knob because a wait
+# that gives up is a real outcome — a busy queue — and what the tool does with
+# that status decides whether a verified write reports as a failure.
+cat >"${bin}/udevadm" <<'SHIM'
+#!/bin/sh
+if [ -n "${SHIM_CALL_LOG-}" ]; then
+	echo "udevadm $*" >>"$SHIM_CALL_LOG"
+fi
+exit "${SHIM_UDEVADM_RC:-0}"
 SHIM
 
 # A dd that does the transfer and then breaks something, once. The fault is
@@ -138,7 +193,7 @@ fi
 exec /usr/bin/date "$@"
 SHIM
 
-chmod +x "${bin}/lsblk" "${bin}/dd" "${bin}/date"
+chmod +x "${bin}/lsblk" "${bin}/dd" "${bin}/date" "${bin}/udevadm"
 
 # The conformant identity and no fault, restored before every case.
 shim_reset() {
@@ -148,7 +203,11 @@ shim_reset() {
 	export SHIM_SERIAL=$good_serial
 	export SHIM_MOUNTPOINTS=""
 	export SHIM_MOUNTPOINTS_FAIL=""
+	export SHIM_PATHLABELS=""
+	export SHIM_UDEVADM_RC=0
 	export SHIM_DATE=""
+	export SHIM_CALL_LOG="${work}/shim-calls"
+	rm -f "$SHIM_CALL_LOG"
 	export SHIM_DD_FAULT_ON=""
 	export SHIM_DD_FAULT_PATH=""
 	export SHIM_DD_FAULT_AT=1
@@ -183,6 +242,32 @@ said() {
 
 present() {
 	if [ -e "$1" ]; then echo present; else echo missing; fi
+}
+
+# One of the tool's functions, called directly by sourcing the script. The first
+# argument is the PATH the case wants — usually the shims ahead of the real
+# tools, and for one case a farm holding almost nothing.
+#
+# A shell of its own per call, because the script sets -e and pipefail as it
+# loads and those are not this lane's options: a single failed assertion would
+# otherwise end the run instead of being reported. No user namespace either —
+# these functions read a device's labels and print advice, and need no uid for
+# that.
+run_sourced() {
+	local path=$1
+	shift
+	rc=0
+	# shellcheck disable=SC2016  # the arguments are the inner shell's, not this one's
+	out=$(PATH="$path" "$BASH" -c '. "$1"; shift; "$@"' _ "$flash" "$@" 2>&1) || rc=$?
+}
+
+# The wait and the query, in the order the shims saw them, as one line. The
+# order is the fix: asking before udev has probed the new partitions is asking
+# too early, and gets an answer that looks like "no such partition".
+call_order() {
+	awk '/^udevadm settle/ { print "settle" }
+	     /PATH,PARTLABEL/  { print "query" }' "$SHIM_CALL_LOG" |
+		tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 
 # A stand-in for a device, filled with something no two runs share, so that a
@@ -437,7 +522,17 @@ t_eq "the medium keeps its size" "$(stat -Lc %s "$target")" $((1024 * 1024))
 t_eq "and what lay past the end of the image is unchanged" \
 	"$(tail -c +$((image_bytes + 1)) "$target" | sha256sum | cut -d' ' -f1)" "$tail_before"
 
-t_eq "and the run says what to do next" "$(said 'provision.sh')" yes
+# Which of the two next-step branches printed, not merely that one did. The
+# target here is a regular file, so the tool cannot ask a kernel about a
+# partition table and the no-path branch is the correct one — and both branches
+# name provision.sh, so asking only for that string is an assertion that holds
+# just as well while the tool hands the operator a path it was told not to use.
+t_eq "and the run says what to do next" "$(said 'flash: next:')" yes
+t_eq "by the branch for a target whose partition labels it could not read" \
+	"$(said "lsblk -o PATH,PARTLABEL ${target}")" yes
+t_eq "and it points at the provisioning step" "$(said 'scripts/provision.sh')" yes
+t_lacks "and no next-step advice names the by-partlabel path, which is ambiguous across media" \
+	"$out" "by-partlabel"
 
 # The read-back composes its digest from three aligned pieces — bulk blocks,
 # whole sectors, then a ragged tail — and every image above is smaller than one
@@ -508,5 +603,119 @@ t_eq "and it fails on the stored artefact, which reading the device twice would 
 	"$(said 'does not decompress')" yes
 t_eq "and the unusable dump is removed rather than left looking like one" \
 	"$(find "$dumps" -name '*20260728-140000*' | wc -l)" 0
+
+# --- the label lookup and the next-step advice, called directly ---------------
+
+# What the install procedure promises by name: the device path of the partition
+# labelled `persistent` on the medium just written. The rows around the answer are
+# the ones a real device gives — a whole-disk row carrying no label at all, a label
+# whose first word is not the whole label, and a label that contains the word
+# without being it. The last one sits ahead of the answer, so a match loosened to
+# "mentions persistent" would hand back the wrong partition here rather than pass.
+shim_reset
+export SHIM_PATHLABELS=$'/dev/sdx\n/dev/sdx1 firmware\n/dev/sdx2 EFI System Partition\n/dev/sdx3 boot_a\n/dev/sdx4 system_a\n/dev/sdx5 persistent-backup\n/dev/sdx6 persistent'
+run_sourced "${bin}:${PATH}" persistent_path /dev/sdx
+t_eq "the lookup answers with the path of the partition labelled persistent" "$out" /dev/sdx6
+
+# The reason the wrong answer was possible: the label comes from udev's database,
+# which is filled in after the partitions themselves appear, so a query issued
+# first gets every path with an empty label and matches none of them.
+t_eq "and asks the device only after waiting for udev to have probed it" \
+	"$(call_order)" "settle query"
+
+# The whole invocation, not merely that a bound was spelled: an assertion that
+# only asked for the flag would hold with the two-minute default written back in.
+# This runs at the end of an eight-minute transfer, where a silent stall of that
+# length reads as a wedged tool holding a device hostage.
+settle_call=$(grep '^udevadm settle' "$SHIM_CALL_LOG")
+t_eq "and bounds that wait rather than leaving it at udevadm's two-minute default" \
+	"$settle_call" "udevadm settle --timeout=10"
+t_le "a bound short enough that waiting it out is not mistaken for a hang" \
+	"${settle_call##*--timeout=}" 30
+
+# The lookup names the device it just wrote, so a second medium carrying the same
+# label cannot answer for it. That scoping is the whole point of printing a path
+# rather than the by-partlabel name, and a lookup that asked the workstation at
+# large would resolve to whichever medium came first — here, deliberately, the
+# wrong one.
+shim_reset
+export SHIM_PATHLABELS=$'/dev/sdy\n/dev/sdy6 persistent\n/dev/sdx\n/dev/sdx1 firmware\n/dev/sdx6 persistent'
+run_sourced "${bin}:${PATH}" persistent_path /dev/sdx
+t_eq "the lookup answers for the device it was given" "$out" /dev/sdx6
+run_sourced "${bin}:${PATH}" persistent_path /dev/sdy
+t_eq "and for another medium holding that same label, its own path" "$out" /dev/sdy6
+
+# A wait that gives up is not a failure of the flash: the write is verified before
+# any of this, and the query that follows may answer anyway. Without that
+# tolerance the tool would abort on a good write, at the end of an eight-minute
+# transfer, telling the operator a flash failed that did not.
+shim_reset
+export SHIM_UDEVADM_RC=1
+export SHIM_PATHLABELS=$'/dev/sdx\n/dev/sdx6 persistent'
+run_sourced "${bin}:${PATH}" persistent_path /dev/sdx
+t_eq "a wait that timed out still yields the path" "$out" /dev/sdx6
+t_eq "and is not a failure" "$rc" 0
+t_eq "and the query happened after the attempt regardless" "$(call_order)" "settle query"
+
+# No such label is an answer, not a fault: a vendor medium has none, and the
+# write is verified either way. The caller has something to say for this case, so
+# the lookup does not need to fail for it.
+shim_reset
+export SHIM_PATHLABELS=$'/dev/sdx\n/dev/sdx1 firmware'
+run_sourced "${bin}:${PATH}" persistent_path /dev/sdx
+t_eq "a device carrying no such label yields no path" "$out" ""
+t_eq "and that is not a failure" "$rc" 0
+
+# A host with no udevadm: a container, or an init that is not systemd. There the
+# database that lags does not exist — lsblk as root probes the device itself, and
+# this tool only ever runs as root — so its absence is tolerated rather than
+# refused. The farm holds exactly what the lookup may legitimately need, so a new
+# dependency slipped into it surfaces here rather than on such a host.
+minimal="${work}/minimal-bin"
+mkdir -p "$minimal"
+ln -sf "${bin}/lsblk" "${minimal}/lsblk"
+ln -sf "$(command -v awk)" "${minimal}/awk"
+
+shim_reset
+export SHIM_PATHLABELS=$'/dev/sdx\n/dev/sdx6 persistent'
+run_sourced "$minimal" persistent_path /dev/sdx
+t_eq "with no udevadm to wait on, the lookup still answers" "$out" /dev/sdx6
+t_eq "and its absence is not a failure" "$rc" 0
+t_eq "and nothing was waited for, there being nothing to wait for" "$(call_order)" "query"
+
+# Both branches of the advice, as shipped. The first is what a successful flash
+# hands the operator and what the install procedure tells them to use; the second
+# is what a flash that could not read the labels hands them instead, and it has to
+# name the device it just wrote rather than a label that may answer for another
+# medium in the same workstation.
+shim_reset
+run_sourced "${bin}:${PATH}" say_next /dev/sdx /dev/sdx6
+t_eq_text "with a path in hand, the tool prints the command that provisions it" "$out" \
+	"flash: next: sudo scripts/provision.sh /dev/sdx6 <generation-dir>"
+
+want_fallback="flash: next: the new table is on /dev/sdx, but its partition labels were not readable yet —
+flash:       find the persistent partition:  lsblk -o PATH,PARTLABEL /dev/sdx
+flash:       then:  sudo scripts/provision.sh <that-path> <generation-dir>"
+
+shim_reset
+run_sourced "${bin}:${PATH}" say_next /dev/sdx ""
+t_eq_text "with no path, it says so and gives the command that finds one on that device" \
+	"$out" "$want_fallback"
+t_lacks "and does not send the operator to the by-partlabel name instead" "$out" "by-partlabel"
+
+# --- and what the runbooks tell the operator to type --------------------------
+
+# What the tool prints is half of it. Two runbooks carry the same provisioning
+# command, and while either of them leads with the by-partlabel form, an operator
+# following that one lands on the ambiguity whatever the tool said. The two had
+# drifted into opposite advice once already, and the drift is invisible until a
+# workstation holds two labelled media, so it is asserted rather than trusted.
+for doc in install provisioning; do
+	docfile="${BRENN_REPO_ROOT}/docs/${doc}.md"
+	t_eq "docs/${doc}.md tells nobody to provision through the by-partlabel name" \
+		"$(grep -cF 'provision.sh /dev/disk/by-partlabel' "$docfile")" 0
+	t_eq "and gives the device-path form the flashing tool prints" \
+		"$(grep -cF 'provision.sh /dev/sdX6' "$docfile")" 1
+done
 
 t_done

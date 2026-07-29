@@ -207,9 +207,11 @@ through. The device is not stranded by a torn image — flashing mode does not
 depend on what the eMMC holds — so re-entering it and re-running the write is
 always available, which is why "run it again" is a complete answer here.
 
-On success the tool re-reads the partition table and prints the exact
-provisioning command for the partition labelled `persistent` on the device it
-just wrote. Use what it printed.
+On success the tool re-reads the partition table, waits for the new partitions'
+labels to become readable, and prints the exact provisioning command for the
+partition labelled `persistent` on the device it just wrote. Use what it
+printed. If it reports that the labels were not readable yet, it prints the
+command that finds the path instead — run that and use what it shows.
 
 ## 4. Provision
 

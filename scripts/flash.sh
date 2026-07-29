@@ -351,6 +351,51 @@ do_backup() {
 
 # --- write ----------------------------------------------------------------
 
+# The path of the partition labelled `persistent` on <device>, or nothing when
+# no such label is readable there.
+#
+# The label reaches lsblk out of the udev database, which udev workers fill in
+# asynchronously as each new partition node appears — so a query issued the
+# instant a new partition table is read sees every path with an empty label and
+# matches nothing. Waiting for that queue to drain is what makes the answer the
+# one the operator needs. Where udev is not running there is no database to lag
+# behind the kernel: lsblk as root probes the device itself, and this tool only
+# ever runs as root, so the absence of udevadm is not a degraded path.
+#
+# The wait is bounded far short of udevadm's own two-minute default because it
+# happens at the end of an eight-minute transfer, where a silent stall reads as a
+# wedged tool; ten seconds is generous for probing six partitions. Its expiry is
+# not a failure either — the write is already verified, and a lookup that comes
+# back empty costs the operator one command, not the flash.
+persistent_path() {
+	local dev=$1
+	if command -v udevadm >/dev/null 2>&1; then
+		udevadm settle --timeout=10 || true
+	fi
+	lsblk -n -o PATH,PARTLABEL -- "$dev" 2>/dev/null |
+		awk '$2 == "persistent" { print $1; exit }' || true
+}
+
+# What the operator does next, given the device just written and whatever path
+# was found on it.
+#
+# Neither branch names `/dev/disk/by-partlabel/persistent`: on a workstation
+# holding more than one medium with that label it resolves to an arbitrary one of
+# them, which is the one mistake this whole procedure is arranged to avoid. So
+# when the path is known it is printed, and when it is not, what is printed is
+# the command that finds it on this device — not a name that may answer for
+# another.
+say_next() {
+	local dev=$1 persistent=$2
+	if [ -n "$persistent" ]; then
+		echo "flash: next: sudo scripts/provision.sh ${persistent} <generation-dir>"
+	else
+		echo "flash: next: the new table is on ${dev}, but its partition labels were not readable yet —"
+		echo "flash:       find the persistent partition:  lsblk -o PATH,PARTLABEL ${dev}"
+		echo "flash:       then:  sudo scripts/provision.sh <that-path> <generation-dir>"
+	fi
+}
+
 do_write() {
 	local dev=$1 image=$2
 
@@ -420,64 +465,68 @@ do_write() {
 
 	# The partitions the image brought only exist to the kernel once it has read
 	# the new table, and the very next step of the install addresses one of them
-	# by name.
+	# by name — a name that only becomes readable once udev has probed each of
+	# them.
 	local persistent=""
 	if [ -b "$dev" ]; then
 		if command -v blockdev >/dev/null 2>&1; then
 			blockdev --rereadpt "$dev" ||
 				echo "flash: ${dev} kept its old partition table; unplug and replug, or reboot, before provisioning" >&2
 		fi
-		persistent=$(lsblk -n -o PATH,PARTLABEL -- "$dev" 2>/dev/null |
-			awk '$2 == "persistent" { print $1; exit }' || true)
+		persistent=$(persistent_path "$dev")
 	fi
 
 	echo "flash: ${image} is on ${dev}"
-	if [ -n "$persistent" ]; then
-		echo "flash: next: sudo scripts/provision.sh ${persistent} <generation-dir>"
-	else
-		echo "flash: next: provision the partition labelled 'persistent' —"
-		echo "flash:       sudo scripts/provision.sh /dev/disk/by-partlabel/persistent <generation-dir>"
-	fi
+	say_next "$dev" "$persistent"
 }
 
-case "${1:-}" in
-	-h | --help)
-		usage
-		exit 0
-		;;
-esac
+# --- dispatch -------------------------------------------------------------
 
-if [ $# -ne 3 ]; then
-	usage
-	exit 2
-fi
+# Only when run, not when sourced. Sourcing the script — which is how the tests
+# call the label lookup and the next-step advice, the two things a run against a
+# regular file can never reach — defines the functions above and nothing else.
+# Both preconditions below stay inside here: they gate running the tool against a
+# real device, not defining what it would do.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	case "${1:-}" in
+		-h | --help)
+			usage
+			exit 0
+			;;
+	esac
 
-mode=$1
-device=$2
-target=$3
-
-case "$mode" in
-	backup | write) ;;
-	*)
+	if [ $# -ne 3 ]; then
 		usage
 		exit 2
-		;;
-esac
+	fi
 
-# Bash's own answer, so that the refusal below still happens when the tool is
-# run with nothing on its path — which is how the missing-lsblk refusal is
-# reached, and it should be reached rather than crashed past.
-[ "${EUID}" -eq 0 ] ||
-	die "reading or writing a whole device needs root"
+	mode=$1
+	device=$2
+	target=$3
 
-# No fallback when the tool that identifies the target is absent. Every guard
-# above reads lsblk, and a run that skipped them with a warning would be a run
-# that wrote fourteen gigabytes to a device on the strength of a line the
-# operator scrolled past.
-command -v lsblk >/dev/null 2>&1 ||
-	die "lsblk is not installed; refusing to touch a device whose identity cannot be read"
+	case "$mode" in
+		backup | write) ;;
+		*)
+			usage
+			exit 2
+			;;
+	esac
 
-case "$mode" in
-	backup) do_backup "$device" "$target" ;;
-	write) do_write "$device" "$target" ;;
-esac
+	# Bash's own answer, so that the refusal below still happens when the tool is
+	# run with nothing on its path — which is how the missing-lsblk refusal is
+	# reached, and it should be reached rather than crashed past.
+	[ "${EUID}" -eq 0 ] ||
+		die "reading or writing a whole device needs root"
+
+	# No fallback when the tool that identifies the target is absent. Every guard
+	# above reads lsblk, and a run that skipped them with a warning would be a run
+	# that wrote fourteen gigabytes to a device on the strength of a line the
+	# operator scrolled past.
+	command -v lsblk >/dev/null 2>&1 ||
+		die "lsblk is not installed; refusing to touch a device whose identity cannot be read"
+
+	case "$mode" in
+		backup) do_backup "$device" "$target" ;;
+		write) do_write "$device" "$target" ;;
+	esac
+fi

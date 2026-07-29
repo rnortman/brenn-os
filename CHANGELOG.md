@@ -89,3 +89,16 @@ today; none of it has yet run on hardware.
   own assertion caught as a red job rather than letting the cases that need a
   namespace skip quietly. The lane relaxes that restriction for its own job;
   the assertion is unchanged and remains the authority.
+- **The provisioning command `scripts/flash.sh` prints after a write.** It
+  re-reads the partition table and looks for the partition labelled
+  `persistent`, but that label reaches `lsblk` out of the udev database, which
+  udev workers fill in asynchronously as each new partition node appears — so a
+  query issued the instant the table was read saw every path with an empty
+  label and matched none of them. On any host running udev the tool therefore
+  took its fallback branch, which recommended
+  `/dev/disk/by-partlabel/persistent`: the one name `docs/install.md` tells the
+  operator not to use, because on a workstation holding more than one such
+  medium it names an arbitrary one of them. The lookup now waits for udev,
+  bounded, before it asks, and neither branch names that path — without a label
+  the tool prints the command that finds the partition on the device it just
+  wrote. Which branch prints, and what each says, are now asserted.

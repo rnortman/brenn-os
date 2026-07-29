@@ -116,10 +116,11 @@ How the image gets onto the medium in the first place, and where this step sits
 in that procedure, is `docs/install.md`.
 
 The first generation goes on at flash time, from the workstation, with the
-persistent partition mounted or named directly:
+persistent partition mounted, or named by the device path `scripts/flash.sh`
+printed — `docs/install.md` says why that path rather than the partition label:
 
 ```
-sudo scripts/provision.sh /dev/disk/by-partlabel/persistent path/to/generation
+sudo scripts/provision.sh /dev/sdX6 path/to/generation
 sudo scripts/provision.sh /mnt/persistent path/to/generation
 sudo scripts/provision.sh -n /mnt/persistent path/to/generation   # check only
 ```
