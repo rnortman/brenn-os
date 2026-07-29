@@ -40,21 +40,36 @@ committed one are kept as history and cost only the space they take.
 | `ssh/ssh_host_ed25519_key` | 0600 | The host key. Provisioned rather than generated so a device keeps its host identity across a reflash. It is the only key sshd offers. |
 | `ssh/ssh_host_ed25519_key.pub` | 0644 | Its public half. |
 | `ssh/authorized_keys` | 0644 | The keys admitted to the device. There is no password authentication anywhere, so this file is the entire access-control list. Administration is done as `root`, which is the only account permitted to log in. |
-| `ca/brenn-ca.pem` | 0644 | PEM certificate. The trust anchor for every HTTPS connection the device makes, including ones the application payload makes. |
+| `ca/brenn-ca.pem` | 0644 | Conditional. PEM certificate: the trust anchor for every HTTPS connection the device makes, including ones the application payload makes. Required as soon as either of the two files below is present, and pointless without them. |
 | `rauc/keyring.pem` | 0644 | PEM certificate. Verifies operating-system update bundles; an update that does not verify against it is not installed. |
-| `journal/upload.conf` | 0644 | `systemd-journal-upload.conf(5)`, with an `[Upload]` section. `URL=` is the collector, and it is `https://` — there is no plaintext option. `TrustedCertificateFile=` names the trust anchor above *through the published path*, `/run/brenn/provisioning/ca/brenn-ca.pem`, since a private certificate is not in any distribution's store. |
-| `app/fetch.conf` | 0644 | Where the application payload comes from: `URL=`, which is `https://`, and `SHA256=`, 64 hex digits, the digest expected of what it returns. Both are required — the transport says who served the payload, the digest is what says what was served, and a payload that does not match it is discarded rather than run. |
+| `journal/upload.conf` | 0644 | Optional. `systemd-journal-upload.conf(5)`, with an `[Upload]` section. `URL=` is the collector, and it is `https://` — there is no plaintext option. `TrustedCertificateFile=` names the trust anchor above *through the published path*, `/run/brenn/provisioning/ca/brenn-ca.pem`, since this image carries no distribution certificate store. **Absent means nothing collects this device's logs**, and the journal is in RAM, so they end at the next reboot — an operator's choice to make deliberately, not a file to leave out by accident. |
+| `app/fetch.conf` | 0644 | Optional. Where the application payload comes from: `URL=`, which is `https://`, and `SHA256=`, 64 hex digits, the digest expected of what it returns. Both are required together — the transport says who served the payload, the digest is what says what was served, and a payload that does not match it is discarded rather than run. Absent means the base system runs and no application does. |
 
-Every file is owned by `root`, and so is every directory on the path to it —
-none of them group- or world-writable. sshd refuses to read an access list
-reachable through a directory somebody else could replace, and it is right to.
-The two files at mode 0600 are secrets; the rest are readable because services
-that are not root read them.
+The trust anchor is whatever the device's endpoints chain to. A public root —
+the one a certificate issued by a public authority chains to — is as legitimate
+an anchor as a private one, and needs no machinery beyond putting it in this
+file. What not to put there is a *leaf* certificate: a short-lived server
+certificate pinned as the anchor works until it is renewed and then stops
+verifying, silently, at whichever endpoint it belonged to. The image ships no
+distribution certificate store at all, so this file is the whole of the device's
+HTTPS trust — narrower than a bundle of every public root when a site runs its
+own authority, and exactly the one public root when it does not.
 
-A generation is complete or it is not installed. There are no defaults for
-missing files: a device that cannot be told which network to join has nothing
-useful to fall back on, and an image carrying a default would be an image
-carrying site configuration.
+On the device, every file is owned by `root`, and so is every directory on the
+path to it — none of them group- or world-writable. sshd refuses to read an
+access list reachable through a directory somebody else could replace, and it is
+right to. A working copy on a workstation has no such requirement: it may be
+owned by whoever assembles it, the modes in the table are what matters there,
+and ownership is set by the tool that installs it. The two files at mode 0600
+are secrets; the rest are readable because services that are not root read them.
+
+A generation is complete or it is not installed. The entries marked optional are
+features a site may not have — no local time server, no log collector, no
+application payload yet — and leaving one out configures the device without that
+piece rather than with a default in its place. Everything else has no fallback
+worth having: a device that cannot be told which network to join has nothing to
+fall back on, and an image carrying a default would be an image carrying site
+configuration.
 
 ## What is checked before one is installed
 
@@ -67,7 +82,12 @@ Installing one is shared the same way: both tools write a generation through
 the same program, so its ownership, its modes, and the check made against the
 installed copy do not depend on which of them put it there.
 
-- Every file in the table is present, except the optional time server.
+- Every file in the table is present, except the ones marked optional.
+- An endpoint that is configured has an anchor to verify it against: a
+  generation carrying `journal/upload.conf` or `app/fetch.conf` and no
+  `ca/brenn-ca.pem` is refused, because the connection it describes could never
+  succeed. An anchor with no consumer is accepted — trust staged for a later
+  change does nothing until something names it.
 - Nothing else is: a stray file — a working copy of a key, an editor's backup —
   is refused rather than carried onto a device, and so is a link out of the
   generation.
@@ -91,6 +111,9 @@ None of this can tell whether the credentials are the *right* ones. That is
 what trialling a generation is for.
 
 ## Installing the first one
+
+How the image gets onto the medium in the first place, and where this step sits
+in that procedure, is `docs/install.md`.
 
 The first generation goes on at flash time, from the workstation, with the
 persistent partition mounted or named directly:
@@ -201,10 +224,209 @@ goes on; the logs waiting to be sent are bounded by the memory the journal is
 allowed and nothing else. A device with no `journal/upload.conf` does not
 upload, and its logs end at the next reboot.
 
-## Where the values live
+## Where the values live, and how a generation is assembled
 
-Not here. The generation for a device is assembled outside this repository,
-from whatever the operator uses for secrets, and copied onto the writable
-partition: at flash time for the first one, over SSH for every one after. Where
-this repository has to write an address down — in a document, an example or a
-test — it is a placeholder such as `journal.example.internal`.
+Not here. The generation for a device is assembled from inputs outside this
+repository, and the result is copied onto the writable partition: at flash time
+for the first one, over SSH for every one after. Where this repository has to
+write an address down — in a document, an example or a test — it is a
+placeholder such as `journal.example.internal`.
+
+What *is* here is the machinery. `scripts/assemble-generation.sh` composes a
+generation from a unit's plain-text configuration and the operator's secret
+material, and hands the result to `scripts/provision.sh -n` before calling it
+assembled — so an assembly that succeeds is a generation the device will take.
+It lives beside the contract on purpose: it reads the file list, the
+secret/public classification and the patterns out of the same program the device
+runs, so a change to the contract cannot leave the assembler producing
+generations the device then refuses.
+
+```
+scripts/assemble-generation.sh <unit-dir>            # build it
+scripts/assemble-generation.sh -f <unit-dir>         # rebuild, replacing
+scripts/assemble-generation.sh -o <dir> <unit-dir>   # write it somewhere else
+```
+
+`<unit-dir>` is the directory holding one unit's `unit.conf` — the file itself
+may be named instead — and the directory's *name* is the unit's name, which is
+what the store below files that unit's identity and secrets under. Where those
+directories live is the operator's business: this repository carries no unit
+configuration and points at none.
+
+A run refuses until every input is present and well formed, and reports
+everything wrong in one pass rather than one problem per run — gathering the
+material is one trip. Nothing is written while anything is outstanding.
+
+### The unit's configuration
+
+`<unit-dir>/unit.conf` is the non-secret half: host name, regulatory domain,
+endpoints. It is worth keeping a history of and is not a credential, so it can
+live in version control. Sourced as shell, `KEY=value`, one to a line.
+
+| Key | Content |
+|---|---|
+| `UNIT_HOSTNAME` | Required. The `hostname` above: one DNS label. |
+| `WIFI_COUNTRY` | Required. The two-letter regulatory domain the radio operates under. No image carries a default, because a radio's legal channels are a property of where it is. |
+| `WIFI_SCAN_SSID` | `1` if the network does not broadcast its name, `0` otherwise (the default). Nothing else is accepted: a spelling of *yes* would read as "the network is broadcast" and produce a unit that never finds a hidden one. |
+| `NTP_SERVER` | A local time server, or empty for the public pool. Empty leaves `net/ntp.conf` out. |
+| `JOURNAL_URL` | The collector, `https://`, or empty. Empty leaves `journal/upload.conf` out — **and then nothing collects this device's logs**. |
+| `APP_URL`, `APP_SHA256` | The payload address and the digest expected of it, or both empty. Both together leave `app/fetch.conf` out; one without the other is refused, because an address with no digest fetches whatever is served and a digest with no address is a decision half made. |
+
+A key this table does not name is refused, by name. The file is read in a shell
+of its own holding nothing but these seven, so nothing it sets reaches the
+assembler's own state — and a misspelled key stops the run instead of reading as
+a feature deliberately left out, which for the optional ones is a legal
+configuration nothing further along would question.
+
+The three values interpolated raw into drop-ins — the two addresses and the time
+server — are refused if they hold whitespace or a control character. A space in
+one of them assembles cleanly, passes the contract check, and produces a unit
+that boots, associates and quietly uploads nothing.
+
+### The operator's store
+
+Everything secret, and the unit's generated identity. `~/.brenn-provisioning` by
+default, `BRENN_PROVISIONING_STORE` to put it elsewhere. The store and everything
+in it is created private.
+
+```
+<store>/<unit>/
+  inputs/wifi.conf              SSID= and PSK= (a passphrase, or 64 hex digits)
+  inputs/authorized_keys        the public keys admitted to the device as root
+  inputs/brenn-ca.pem           the HTTPS trust anchor, when an endpoint is configured
+  inputs/rauc-keyring.pem       the certificate update bundles are verified against
+  identity/machine-id           generated once, then reused
+  identity/ssh_host_ed25519_key generated once, then reused
+  generation/                   the assembled output
+```
+
+The split is the point: **the unit's configuration is plain text and the store is
+not.** One is reviewable, diffable and worth reading in a pull request; the other
+is a device's host key, its wireless credentials and its access list.
+
+Where the store lives is the operator's decision, and the default is the
+conservative one: a directory in the operator's home, tracked by nothing. The
+alternative is legitimate and worth naming, because the store holds the one thing
+here that cannot be regenerated — a store tracked in a **private** repository is
+backed up by `git push`, which is more backup than an untracked home directory
+usually gets. What that choice costs:
+
+- History is permanent and every clone carries it. A secret that lands in the
+  wrong repository cannot be withdrawn from one, only rotated.
+- Git records no file modes beyond the executable bit, so a fresh clone's store
+  is only as private as the directories above it. The next assembly run
+  re-tightens the store path to `0700` — it does that on every invocation — but
+  until then the modes are whatever the clone's umask gave them.
+- The store reaches whatever clones the repository, and that is rarely only the
+  operator. Build and deploy automation that checks the repository out gets the
+  material too, at the checkout's modes, in a workspace that may outlive the
+  job and may build other people's code — and no assembly ever runs there, so
+  the re-tightening above never fires. Before tracking a store, know what
+  clones the repository; if that set includes machines the device's secrets
+  should not reach, filter the checkout or keep the store somewhere else.
+
+Generation file modes are unaffected either way: the assembler takes them from
+the contract, never from the source file it copied.
+
+A repository holding a store ignores the derived half of it and nothing else:
+`generation/`, plus the `generation.new.*` and `generation.old.*` scratch
+siblings an interrupted or killed assembly can leave beside it. Under a store
+laid out as `store/<unit>/`, that is three patterns:
+
+```
+store/*/generation/
+store/*/generation.new.*
+store/*/generation.old.*
+```
+
+Nothing else, and in particular no pattern that also matches `inputs/` or
+`identity/`: those are the irreproducible half, and an ignore rule over them
+lets `git add`, commit and push all succeed while backing up none of it, saying
+so nowhere. A left-behind `generation.old.*` is a whole previous generation,
+secrets included, which is why the scratch patterns are here rather than left to
+a `git status` that would offer them for commit.
+
+What is *not* an operator choice: the store never goes inside this repository.
+This tree is public, and its gates would refuse the material.
+
+`inputs/wifi.conf` is the operator's own file rather than one of the
+generation's, and its two values are read as the whole rest of their line, byte
+for byte. A network name or a passphrase may legally contain spaces, and a
+reader that trimmed them would hash the right words against the wrong network
+and produce something that looks perfectly valid. What the rendered
+`ssid="…"` cannot carry is refused instead: a name over 32 bytes or holding a
+double quote or a control character, a passphrase outside 8 to 63
+printable-ASCII bytes. The escape hatch for anything else is to supply the
+pre-shared key itself, as 64 hex digits.
+
+`inputs/brenn-ca.pem` is demanded exactly when the unit configures something
+that would read it, and the refusal names which value did. An anchor in the
+store with nothing to consume it is still carried into the generation — trust
+staged ahead of the endpoint that will use it is harmless, and it is one fewer
+reassembly later. `inputs/rauc-keyring.pem` is demanded unconditionally: A/B
+slots exist from the first boot, and a device that can verify no update bundle
+can only be changed by being taken apart.
+
+### Identity is generated once
+
+The machine id and the SSH host key are made on the unit's first assembly and
+then reused forever. They are what say a device is *the same device* — the name
+its logs are filed under, and the key an administrator's client remembers — so a
+reflash restores them rather than minting new ones. That is the whole reason
+they are provisioned instead of generated on the device.
+
+Losing `identity/` means every consumer upstream sees a new machine and every
+client warns about a changed host key. **The store is the thing to back up.**
+
+### Two files the assembler composes
+
+Neither is copied from an input, so what they mean is worth knowing:
+
+- The supplicant configuration carries `ctrl_interface=`, because the device's
+  wireless test lane drives the radio through `wpa_cli` and the supplicant opens
+  that socket only if its configuration names one. Without it a unit associates
+  and cannot be asked whether it did.
+- A wireless passphrase is turned into the pre-shared key before it is written —
+  802.11i's PBKDF2-HMAC-SHA1 over the passphrase, salted with the network name,
+  4096 iterations, 256 bits. The key is what the radio needs; the words behind it
+  would be one more secret sitting on a device for nothing. The derivation runs
+  in-process rather than through `wpa_passphrase`, which takes the passphrase
+  only as a command-line argument, and an argument list is readable through
+  `/proc` by every other process on the workstation. A 64-hex `PSK=` is already
+  the key and is used as it stands.
+
+### The update-signing keypair
+
+`rauc/keyring.pem` is the one piece of trust material an operator has to create
+rather than obtain. It is not a certificate authority and there is nothing to
+run: it is a single self-signed certificate, and the private half is what
+`make bundle` signs with.
+
+```
+openssl req -x509 -newkey rsa:4096 -sha256 -noenc -days 10950 \
+  -subj "/CN=brenn-os update signing" \
+  -keyout brenn-os-signing.key -out brenn-os-signing.crt
+chmod 0600 brenn-os-signing.key
+```
+
+The certificate goes into the store as `inputs/rauc-keyring.pem`, and the same
+file is `BRENN_BUNDLE_KEYRING` when a bundle is built; the key is
+`BRENN_BUNDLE_KEY` and the certificate `BRENN_BUNDLE_CERT`. RSA and ECDSA are
+both well-trodden here; the thirty-year validity is deliberate, because RAUC
+checks the signing certificate's validity at install time and a device that
+outlives its keyring certificate stops accepting updates on a date nobody wrote
+down.
+
+The private key is not per-unit and the assembler never reads it, so it does not
+belong in `inputs/`. Where it lives is the operator's call, at mode 0600 and
+backed up: losing it means no device already carrying its certificate can ever
+be updated again, and it is the only key in this system with that property.
+
+Certificates from a public authority cannot do this job, which is why the
+keyring is the one thing not covered by the trust-anchor discussion above. A
+public authority issues TLS *server* certificates; it does not sign artifacts.
+Signing bundles with such a leaf's key fails in ninety days, when the
+certificate expires and every deployed device begins refusing every update. And
+putting a public *root* in the keyring would mean any holder of any certificate
+that authority ever issued could sign an operating system this device installs.
+The keyring has to be material the operator alone controls.

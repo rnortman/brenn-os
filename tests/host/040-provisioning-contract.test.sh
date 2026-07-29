@@ -56,17 +56,54 @@ new_gen
 t_eq "a conformant generation is accepted" "$(verdict)" accepted
 
 # Each required file, one at a time. A device missing any one of these is a
-# device missing a way onto the network, an identity, or a way in.
+# device missing a way onto the network, an identity, a way in, or a way to take
+# an update — and the last of those is the one that can only be repaired by
+# taking the device apart, which is why the keyring is here and not below.
 for f in hostname machine-id net/wpa_supplicant-wlan0.conf \
 	ssh/ssh_host_ed25519_key ssh/ssh_host_ed25519_key.pub ssh/authorized_keys \
-	ca/brenn-ca.pem rauc/keyring.pem journal/upload.conf app/fetch.conf; do
+	rauc/keyring.pem; do
 	new_gen
 	rm -f "${gen}/${f}"
 	t_eq "a generation missing ${f} is refused" "$(verdict)" refused
 done
 
-# The local time server is the one optional file: without it the distribution's
-# public pool applies, which is a working clock.
+# The optional half of the contract: a site that has no log collector and no
+# application payload yet provisions neither, and then it has nothing for the
+# trust anchor to be for either. That is a device which boots, joins the network
+# and answers SSH — the bring-up configuration — and it is a generation that has
+# to validate, or the whole of the first flash waits on infrastructure that does
+# not exist.
+new_gen
+rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/ca/brenn-ca.pem"
+t_eq "a generation with no collector, no payload and no anchor is accepted" \
+	"$(verdict)" accepted
+
+new_gen
+rm -f "${gen}/journal/upload.conf"
+t_eq "a generation with no log collector is accepted" "$(verdict)" accepted
+
+new_gen
+rm -f "${gen}/app/fetch.conf"
+t_eq "a generation with no application payload is accepted" "$(verdict)" accepted
+
+# The cross-check, in both directions. An endpoint with no anchor is a connection
+# that can never succeed — the image carries no distribution certificate store —
+# and on a device it would be retried forever with nobody watching, so it is
+# refused here. An anchor with nothing to verify is merely staged.
+new_gen
+rm -f "${gen}/ca/brenn-ca.pem" "${gen}/app/fetch.conf"
+t_eq "a collector with no trust anchor is refused" "$(verdict)" refused
+
+new_gen
+rm -f "${gen}/ca/brenn-ca.pem" "${gen}/journal/upload.conf"
+t_eq "a payload source with no trust anchor is refused" "$(verdict)" refused
+
+new_gen
+rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf"
+t_eq "a trust anchor with nothing to verify is accepted" "$(verdict)" accepted
+
+# The local time server is optional in the same way: without it the
+# distribution's public pool applies, which is a working clock.
 new_gen
 t_eq "a generation with no local time server is accepted" "$(verdict)" accepted
 
@@ -178,9 +215,9 @@ new_gen
 sed -i 's|URL=https://|URL=http://|' "${gen}/app/fetch.conf"
 t_eq "a plaintext payload source is refused" "$(verdict)" refused
 
-# The collector's certificate is signed by the anchor this same generation
-# carries; trusting anything else means trusting the distribution's store, which
-# has never heard of it, and the upload fails at run time with a TLS error.
+# The collector's certificate is verified against the anchor this same generation
+# carries; trusting any other file reaches for the distribution's store, which
+# this image does not carry, and the upload fails at run time with a TLS error.
 new_gen
 sed -i 's|^TrustedCertificateFile=.*|TrustedCertificateFile=/etc/ssl/certs/ca-certificates.crt|' \
 	"${gen}/journal/upload.conf"
@@ -350,6 +387,29 @@ else
 
 	run_provision "${work}/no-such-target" "$gen"
 	t_eq "a target that is neither a device nor a mount is refused" "$rc" 1
+
+	# The bring-up shape, installed rather than only validated: no collector, no
+	# payload, nothing for an anchor to be for. Installing is a different program
+	# from checking — it walks the contract to close the secrets, chmods the tree
+	# and re-checks the copy — and this is the exact generation the first flash puts
+	# on a device, so it cannot be the one shape that has never been through it.
+	new_gen
+	rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/ca/brenn-ca.pem"
+	bare="${work}/target-bare"
+	mkdir -p "$bare"
+	run_provision "$bare" "$gen"
+	t_eq "installing a generation with no collector, payload or anchor succeeds" "$rc" 0
+	t_eq "it too is committed, not on trial" \
+		"$(readlink "${bare}/provisioning/active" 2>/dev/null)" gen-1
+	for f in journal/upload.conf app/fetch.conf ca/brenn-ca.pem; do
+		t_eq "and what it leaves out stays left out: ${f}" \
+			"$([ -e "${bare}/provisioning/gen-1/${f}" ] && echo present || echo missing)" \
+			missing
+	done
+	t_eq "the host key is installed unreadable to anyone else here as well" \
+		"$(stat -c '%a' "${bare}/provisioning/gen-1/ssh/ssh_host_ed25519_key" 2>/dev/null)" 600
+	gen="${bare}/provisioning/gen-1"
+	t_eq "and the installed copy satisfies the contract" "$(verdict)" accepted
 fi
 
 t_done

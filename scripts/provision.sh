@@ -12,9 +12,10 @@
 # this one cannot be, because there is no boot to trial it against and nothing
 # to fall back to, which is why it is installed committed.
 #
-# The generation itself is assembled outside this repository, from wherever the
-# operator keeps secrets. Nothing site-specific is in this script, and running
-# it leaves nothing site-specific behind in the tree.
+# The generation itself is assembled by assemble-generation.sh from inputs that
+# live outside this repository — the unit's configuration and wherever the
+# operator keeps secrets. Nothing site-specific is in this script, and running it
+# leaves nothing site-specific behind in the tree.
 #
 # -n validates the generation and stops, writing nothing. Worth doing before
 # taking a device apart.

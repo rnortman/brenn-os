@@ -90,6 +90,12 @@ correct boot looks like, down to the peripherals, the watchdog counting in
 hardware, an idle minute writing nothing to the flash, and the update mechanism
 agreeing with the firmware about which slot is running.
 
+How that flash is done — back up the medium first, write the image, provision
+it, and what to do when a unit does not come back — is `docs/install.md`, with
+`scripts/flash.sh` as the guarded tool for the two destructive steps. It is a
+first-install and disaster-recovery procedure only; everything after it reaches
+a device over the network.
+
 ## Test lanes
 
 Four, in order of how much they need:

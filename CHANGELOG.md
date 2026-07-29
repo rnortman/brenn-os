@@ -25,7 +25,22 @@ today; none of it has yet run on hardware.
   workstation and the device run it. `scripts/provision.sh` installs the first
   generation at flash time, and every change after that is a transaction: tried
   for one boot, reverted automatically if the device does not come back.
-  Schema: `docs/provisioning.md`.
+  What a site has not stood up yet, it does not have to name: a local time
+  server, a log collector, an application payload and the HTTPS trust anchor
+  they are verified against are optional, and a device provisioned without one
+  boots, joins the network, answers SSH and takes updates without that piece.
+  Configuring an endpoint without an anchor to verify it is refused, since this
+  image carries no certificate store of its own.
+  `scripts/assemble-generation.sh` builds a generation from a unit's plain-text
+  configuration and an operator store of secrets that never enters this public
+  tree: it generates the unit's identity once and reuses it on every later
+  assembly, derives the wireless key without the passphrase ever reaching a
+  command line, refuses every input a device could not use rather than one at a
+  time, and hands the result to the contract check before calling it assembled.
+  `docs/provisioning.md` is the whole of it: the schema, the unit
+  configuration's keys, the operator store's layout and what in it is generated
+  once, where that store may live and what each choice costs, and the single
+  `openssl` command that creates the update-signing keypair.
 - **Signed A/B OS updates.** `make bundle` packs a build into a RAUC bundle.
   Installing one writes the slot pair that is not running, which then gets
   exactly one boot to prove itself and rolls back on its own if it does not.
@@ -43,6 +58,17 @@ today; none of it has yet run on hardware.
   holds a unit to what it does, down to the peripherals, the watchdog counting in
   hardware, an idle minute writing nothing to flash, and the update mechanism
   agreeing with the firmware about which slot is running.
+- **A way to get an image onto a device, and a copy of what was there first.**
+  `docs/install.md` is the first-install and disaster-recovery runbook —
+  flashing mode, backup, write, provision, first boot, and what to do when a
+  unit does not come back — and `scripts/flash.sh` is the tool for the two steps
+  that destroy something. It identifies the target before it touches it and
+  refuses rather than warns: a whole disk, on USB, reporting the mass-storage
+  gadget's model, with nothing mounted off it and room for the image. A backup
+  is verified by reading the device a second time and comparing that against the
+  stored archive, and a write is verified by reading it back off the medium;
+  either mismatch fails the run rather than reporting success. The procedure
+  itself has not yet been performed on hardware.
 - **Repository scaffolding.** Apache-2.0 license, charter, and TODO ledger;
   secret-scanning commit and push gates wired by `make setup-hooks`; and CI that
   independently scans the tree, runs the gate, builds the image, asserts against

@@ -95,6 +95,37 @@ t_contains() {
 	fi
 }
 
+# Substring forms, for the places t_contains's whole-line grammar does not fit:
+# a refusal message quoted in fragments, where the rest of the line is the
+# path or the value that varies per run.
+t_has() {
+	local desc=$1 haystack=$2 needle=$3
+	case $haystack in
+		*"$needle"*) t_pass "$desc" ;;
+		*) t_fail "$desc" "expected to find: ${needle}" "in: ${haystack}" ;;
+	esac
+}
+
+t_lacks() {
+	local desc=$1 haystack=$2 needle=$3
+	case $haystack in
+		*"$needle"*) t_fail "$desc" "expected NOT to find: ${needle}" ;;
+		*) t_pass "$desc" ;;
+	esac
+}
+
+# An exit status reported as a word, so the assertion reads as the outcome
+# rather than as a number. The third argument, if given, is what to print when
+# the status is not zero — usually the run's own output.
+t_ok() {
+	local desc=$1 status=$2
+	if [ "$status" -eq 0 ]; then
+		t_pass "$desc"
+	else
+		t_fail "$desc" "${3:-exit ${status}}"
+	fi
+}
+
 t_le() {
 	local desc=$1 actual=$2 limit=$3
 	if [ "$actual" -le "$limit" ]; then

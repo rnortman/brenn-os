@@ -96,6 +96,66 @@ dev_absent "journald keeps no directory for persistent storage" \
 
 # --- the upload -------------------------------------------------------------
 
+# Whether there is an upload at all is the generation's to say: the collector is
+# optional configuration, and the uploader is conditioned on the file naming it.
+# Both answers are asserted — a device with a collector has to be shipping logs,
+# and a device without one has to be visibly not shipping them rather than
+# looking like a device whose uploader failed. What is never allowed is this
+# section quietly doing nothing: a generation that dropped `upload.conf` by
+# accident would then pass as a device that meant to have no collector.
+dev_capture "test -e $(dev_quote "$EXPECT_UPLOAD_SOURCE") && echo provisioned || echo absent"
+collector=$DEV_OUT
+
+if [ "$collector" = absent ]; then
+	t_pass "no collector is provisioned — this device's logs are in RAM and end at the next reboot"
+
+	# Inactive because its condition was not met, which is the difference
+	# between "not configured" and "tried and failed": the second is a finding
+	# and looks identical from `is-active` alone.
+	dev_eq "the journal uploader is not running" \
+		"systemctl is-active $(dev_quote "$EXPECT_UPLOAD_UNIT") || true" inactive
+	dev_eq "and it is the missing configuration that held it back" \
+		"systemctl show -p ConditionResult --value $(dev_quote "$EXPECT_UPLOAD_UNIT")" no
+	# Neither reading above separates a condition that failed from a unit systemd
+	# never got to: `inactive` is also what a masked or unwanted unit reports, and
+	# `ConditionResult=no` is what a unit whose conditions were never evaluated
+	# reports. These two are what make the pair mean what it says — the unit is
+	# the one the image ships, and systemd did check it. Without them a lost
+	# WantedBy, a left-behind mask or a dropped logging layer passes here, and the
+	# day a collector is provisioned the uploader does not start.
+	dev_eq "the uploader is the unit this image ships, loaded and not masked" \
+		"systemctl show -p LoadState --value $(dev_quote "$EXPECT_UPLOAD_UNIT")" loaded
+	dev_capture "systemctl show -p ConditionTimestampMonotonic --value $(dev_quote "$EXPECT_UPLOAD_UNIT")"
+	case $DEV_OUT in
+		"" | *[!0-9]*)
+			t_fail "and systemd did evaluate that condition" \
+				"expected a monotonic timestamp" \
+				"read: ${DEV_OUT:-<nothing>}"
+			;;
+		0)
+			t_fail "and systemd did evaluate that condition" \
+				"the conditions were never checked: nothing pulled the unit into the boot"
+			;;
+		*) t_pass "and systemd did evaluate that condition" ;;
+	esac
+	# The path the uploader would read, which is a link into the generation and
+	# so dangles when the generation names no collector. Asserted because a
+	# regular file left at that path by anything else is a configuration the
+	# device never meant to have.
+	dev_absent "the published configuration path resolves to nothing" \
+		"$EXPECT_UPLOAD_CONF"
+
+	t_done
+fi
+
+if [ "$collector" != provisioned ]; then
+	t_fail "whether a collector is provisioned can be read" \
+		"expected provisioned or absent" "read: ${collector:-<nothing>}"
+	t_done
+fi
+
+t_pass "a collector is provisioned, so the logs are expected to leave the device"
+
 dev_eq "the journal uploader is running" \
 	"systemctl is-active $(dev_quote "$EXPECT_UPLOAD_UNIT")" active
 

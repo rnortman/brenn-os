@@ -259,9 +259,10 @@ if have journal/upload.conf; then
 		problem "journal/upload.conf has no [Upload] section"
 	grep -Eq '^[[:space:]]*URL=https://' "$up" ||
 		problem "journal/upload.conf has no https:// URL= (there is no plaintext option)"
-	# The collector's certificate is signed by the private anchor this same
-	# generation carries; naming any other file leaves the upload trusting the
-	# distribution's store, which has never heard of it.
+	# The collector's certificate is verified against the anchor this same
+	# generation carries — a private root or a public one, whichever the
+	# collector's certificate chains to. Naming any other file leaves the upload
+	# trusting the distribution's store, which this image does not carry.
 	anchor=$(sed -n 's/^[[:space:]]*TrustedCertificateFile=//p' "$up" | tr -d '[:space:]')
 	[ "$anchor" = "${link}/ca/brenn-ca.pem" ] ||
 		problem "journal/upload.conf must trust ${link}/ca/brenn-ca.pem, not '${anchor}'"
@@ -283,6 +284,21 @@ if have app/fetch.conf; then
 	digest=$(brenn_conf_value "$fetch" SHA256)
 	printf '%s' "$digest" | grep -Eq '^[0-9a-f]{64}$' ||
 		problem "app/fetch.conf names no SHA256= of 64 hex digits"
+fi
+
+# An endpoint that is configured needs the anchor it is verified against. The
+# image carries no distribution certificate store, so whatever trust the device
+# has arrives in the generation: an https:// address with no anchor beside it is
+# a connection that can never succeed, and it is refused here rather than
+# retried forever on a device nobody can see.
+#
+# The other direction is allowed. An anchor with no consumer is trust staged for
+# a later configuration transaction and does nothing until one names it.
+if ! have ca/brenn-ca.pem; then
+	for consumer in journal/upload.conf app/fetch.conf; do
+		have "$consumer" || continue
+		problem "${consumer} names an https:// endpoint and the generation carries no ca/brenn-ca.pem to verify it against"
+	done
 fi
 
 exit "$rc"

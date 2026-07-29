@@ -20,14 +20,30 @@ net/wpa_supplicant-wlan0.conf:secret
 ssh/ssh_host_ed25519_key:secret
 ssh/ssh_host_ed25519_key.pub:public
 ssh/authorized_keys:public
+rauc/keyring.pem:public"
+
+# What a site may leave unsaid. Absent means the feature is not configured — not
+# that something stands in for it — and each consumer is conditioned on its own
+# file being there, so a device provisioned without one starts without that
+# piece:
+#
+#   net/ntp.conf         the distribution's public pool sets the clock.
+#   journal/upload.conf  nothing collects the logs, and the journal is in RAM,
+#                        so they end at the next reboot.
+#   app/fetch.conf       the base system runs and no application does.
+#   ca/brenn-ca.pem      no HTTPS trust is staged. Required as soon as either of
+#                        the two files above is present, which the check
+#                        cross-checks: the image carries no distribution
+#                        certificate store, so an endpoint with no anchor in the
+#                        generation has nothing to verify against.
+#
+# The update keyring is not on this list. A/B slots exist from the first boot,
+# and a device that can verify no bundle can only be changed by being taken
+# apart.
+BRENN_CONTRACT_OPTIONAL="net/ntp.conf:public
 ca/brenn-ca.pem:public
-rauc/keyring.pem:public
 journal/upload.conf:public
 app/fetch.conf:public"
-
-# A local time server is the one thing a site may leave unsaid: without it the
-# distribution's public pool applies, which is a working clock.
-BRENN_CONTRACT_OPTIONAL="net/ntp.conf:public"
 
 BRENN_CONTRACT_DIRECTORIES="net ssh ca rauc journal app"
 

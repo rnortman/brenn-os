@@ -57,10 +57,39 @@ dev_eq "the host name is the provisioned one" \
 
 # The credentials the generation carries, in place and readable through the
 # published path. sshd resolves its host key through this path, so a broken
-# link here is a device that stops answering after a reboot.
-for f in ssh/ssh_host_ed25519_key ssh/authorized_keys ca/brenn-ca.pem rauc/keyring.pem; do
+# link here is a device that stops answering after a reboot. The update keyring
+# is here too: a device that can verify no bundle can only be changed by being
+# taken apart.
+for f in ssh/ssh_host_ed25519_key ssh/authorized_keys rauc/keyring.pem; do
 	dev_exists "the generation provides ${f}" "${link}/${f}"
 done
+
+# The HTTPS trust anchor, which is required exactly when something on this device
+# makes an HTTPS connection — the mirror, on a running device, of the check the
+# contract makes on a candidate. The image carries no distribution certificate
+# store, so an endpoint provisioned without the anchor is an endpoint that can
+# never be reached.
+dev_capture "if test -e $(dev_quote "${link}/journal/upload.conf") ||
+	test -e $(dev_quote "${link}/app/fetch.conf"); then echo consumed; else echo unused; fi"
+anchor_use=$DEV_OUT
+
+case $anchor_use in
+	consumed)
+		dev_exists "an HTTPS endpoint is provisioned, so the generation provides ca/brenn-ca.pem" \
+			"${link}/ca/brenn-ca.pem"
+		;;
+	unused)
+		# Not asserted absent: an anchor staged ahead of the endpoint that will
+		# use it is a legitimate generation, and refusing it here would make the
+		# suite stricter than the contract. What is asserted is that the reading
+		# was taken and said so.
+		t_pass "no HTTPS endpoint is provisioned, so the trust anchor is optional on this device"
+		;;
+	*)
+		t_fail "whether anything consumes the trust anchor can be read" \
+			"expected consumed or unused" "read: ${anchor_use:-<nothing>}"
+		;;
+esac
 
 # What sshd resolved, not what the configuration file says: the image suite
 # reads the files, and this reads the daemon's own answer.

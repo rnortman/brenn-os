@@ -122,6 +122,37 @@ better made after the lane has been run by hand at least once.
 Done when CI runs `make test-clean`, or the decision to leave it a
 run-it-yourself lane is recorded here in place of this entry.
 
+## `first-flash-observations`
+
+`docs/install.md` is the procedure for putting an image on a device, and it has
+not yet been performed end to end. Most of what it says about flashing mode was
+observed on the unit before it was written, but three things in it are still
+expectations rather than readings:
+
+- **The first boot of this image on the hardware** — that a freshly written and
+  provisioned unit joins its network and answers SSH. This is the one the
+  document marks with a status note.
+- **Which of the head PCB's two USB ports** produced the
+  cable-connected-at-power-on boot failure the first-boot step warns about. The
+  observation is real; the port it attaches to was not recorded, and the runbook
+  therefore says to disconnect from either. Re-attribute it while the robot is
+  already open.
+- **What happens if USB is connected *after* a successful boot** — whether
+  anything enumerates, and whether it disturbs the running system. Untried, and
+  cheap to try on a bench where the robot is already apart.
+
+Deferred because only the flash itself settles any of them, and a document that
+claims otherwise is worse than one that says which parts are unperformed — the
+same honesty the device test lane already practises about its own assertions.
+
+Bring-up discipline applies when it happens: the expectations are written down
+first, the run confirms or corrects them, and an unexpected reading gets human
+review before either the device or the document is adjusted.
+
+Done when the install has been performed, the three items above are readings
+rather than expectations, the observations are folded back into
+`docs/install.md`, and its status note is gone.
+
 ## `erofs-root`
 
 The root filesystem is read-only ext4. The image layout supports erofs behind a
