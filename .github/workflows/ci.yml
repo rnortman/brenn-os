@@ -311,11 +311,8 @@ jobs:
           done
           podman system migrate
 
-      # What this lane is actually running, recorded in every run's log and
-      # asserted rather than assumed. The pin above rests on a diagnosis read
-      # off an error string; these three lines are the observation that either
-      # confirms it or contradicts it, and a runner change that routes podman
-      # back to the distro runtime fails here instead of working by luck.
+      # The pin above rests on a diagnosis read off an error string; these
+      # assertions are the observation that either confirms or contradicts it.
       - name: Report and assert the container toolchain
         run: |
           podman version

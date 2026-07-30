@@ -80,13 +80,10 @@ t_eq "and the flag that makes it usable from a container is asserted" \
 t_eq "the tools the image suite reads with are installed on this lane too" \
 	"$(printf '%s\n' "$container" | grep -c 'apt-get install .*mtools')" 1
 
-# The runtime podman hands a container to is fetched, so it is pinned the way
-# every other fetched tool in this repo is: a version, a sha256 that is the
-# real gate, and a path podman is told to use rather than left to discover.
-# Unpinned it is whatever pairing the runner image carries on the day, which is
-# how this lane went red without a line of the tree changing — a podman writing
-# OCI spec v1.2 against a crun too old to parse it refuses to create a
-# container at all.
+# Unpinned, the runtime is whatever pairing the runner image carries on the
+# day — a podman writing OCI spec v1.2 against a crun too old to parse it
+# refuses to create a container at all, which is how this lane went red without
+# a line of the tree changing.
 crun_version=$(printf '%s\n' "$container" |
 	sed -n 's/^      CRUN_VERSION: //p' | head -n1 | tr -d '"')
 crun_sha=$(printf '%s\n' "$container" | sed -n 's/^      CRUN_SHA256: //p' | head -n1)
