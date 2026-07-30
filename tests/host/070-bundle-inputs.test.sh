@@ -63,8 +63,15 @@ new_output_dir() {
 
 # What the tool says is asserted through its refusals, so its complaint is kept
 # and its ordinary output is not.
+#
+# The knobs are cleared and the local overlay is pointed at a path that does not
+# exist, so a build host with signing material configured — which is every host
+# that has ever cut a release — asserts the same thing a bare clone does.
 run_bundle() {
-	"$make_bundle" "$@" >/dev/null 2>"${work}/err"
+	env -u BRENN_BUNDLE_CERT -u BRENN_BUNDLE_KEY -u BRENN_BUNDLE_KEYRING \
+		-u BRENN_BUNDLE_VERSION -u BRENN_BUNDLE_OUTPUT \
+		BRENN_BUNDLE_CONF="${work}/no-such.conf" \
+		"$make_bundle" "$@" >/dev/null 2>"${work}/err"
 	rc=$?
 	err=$(cat "${work}/err")
 	return 0

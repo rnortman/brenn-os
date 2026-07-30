@@ -80,6 +80,40 @@ t_eq "and the flag that makes it usable from a container is asserted" \
 t_eq "the tools the image suite reads with are installed on this lane too" \
 	"$(printf '%s\n' "$container" | grep -c 'apt-get install .*mtools')" 1
 
+# The runtime podman hands a container to is fetched, so it is pinned the way
+# every other fetched tool in this repo is: a version, a sha256 that is the
+# real gate, and a path podman is told to use rather than left to discover.
+# Unpinned it is whatever pairing the runner image carries on the day, which is
+# how this lane went red without a line of the tree changing — a podman writing
+# OCI spec v1.2 against a crun too old to parse it refuses to create a
+# container at all.
+crun_version=$(printf '%s\n' "$container" |
+	sed -n 's/^      CRUN_VERSION: //p' | head -n1 | tr -d '"')
+crun_sha=$(printf '%s\n' "$container" | sed -n 's/^      CRUN_SHA256: //p' | head -n1)
+t_eq "the container lane pins the runtime it executes through" \
+	"$([ -n "$crun_version" ] && echo yes)" yes
+t_eq "and pins the download by digest, since a release asset can be replaced" \
+	"$(printf '%s' "$crun_sha" | grep -c '^[0-9a-f]\{64\}$')" 1
+t_eq "installing it at the path the pin names" \
+	"$(printf '%s\n' "$container" | grep -cF 'install -m 0755 crun /usr/local/bin/crun')" 1
+t_eq "and naming that path to podman rather than leaving it to PATH" \
+	"$(printf '%s\n' "$container" | grep -cF 'crun = ["/usr/local/bin/crun"]')" 1
+
+# A pin nothing checks is a pin that silently stops applying: podman resolving
+# the distro runtime again would build exactly as well, right up until the day
+# it does not.
+#
+# The needles are the workflow's shell text, matched literally: the variables
+# in them belong to the job's own script, not to this one.
+# shellcheck disable=SC2016
+path_assert='test "$resolved" = /usr/local/bin/crun'
+# shellcheck disable=SC2016
+version_assert='test "$version" = "$CRUN_VERSION"'
+t_eq "and asserting in-job that podman resolved the pinned runtime" \
+	"$(printf '%s\n' "$container" | grep -cF "$path_assert")" 1
+t_eq "at the pinned version" \
+	"$(printf '%s\n' "$container" | grep -cF "$version_assert")" 1
+
 # Every binary in the target root filesystem runs under emulation on this lane,
 # so the build is slow by nature. A timeout sized for the native lane would kill
 # it mid-build and report it as a lane failure.
