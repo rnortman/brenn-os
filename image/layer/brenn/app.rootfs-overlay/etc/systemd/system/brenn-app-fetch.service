@@ -3,7 +3,10 @@ Description=Obtain and activate the application payload
 
 # The payload comes over TLS from an address the device was provisioned with,
 # so the clock has to be plausible and the selected generation has to be
-# published before this can mean anything.
+# published before this can mean anything. The clock half is latent as things
+# stand: nothing on this image pulls time-sync.target into a transaction, so
+# this unit starts on whatever clock it finds, and the in-program retry below is
+# what covers a cold one.
 RequiresMountsFor=/run/brenn-app
 Wants=network-online.target
 After=network-online.target time-sync.target brenn-config-select.service

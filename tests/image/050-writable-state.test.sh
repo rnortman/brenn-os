@@ -5,7 +5,7 @@
 # The A/B image layout's own answer is to put /var, /home and the journal on
 # the persistent partition. This product's answer is that steady-state eMMC
 # writes are zero: /var is an overlay with RAM on top of the baked filesystem,
-# and the mounts that would put state on flash are masked. Both answers are
+# and the mounts that would put state on flash never run. Both answers are
 # expressed as unit files, and the layout's answer wins by default, so this
 # test is what stops a builder bump from quietly restoring it.
 
@@ -28,8 +28,8 @@ else
 	t_fail "/data is a symlink" "nothing found at /data in the root filesystem"
 fi
 
-# ...and it has to be mounted. The layout leaves that to fstab entries this
-# image masks, so the requirement is stated separately.
+# ...and it has to be mounted. The layout leaves that to fstab entries whose
+# units this image holds back, so the requirement is stated separately.
 if content=$(img_ext4_cat "$IMG_SPEC" "${units}/local-fs.target.d/10-brenn-persistent.conf"); then
 	t_eq "the persistent partition is mounted at boot" \
 		"$(img_ini_value "$content" RequiresMountsFor)" "/${EXPECT_DATA_LINK}"
@@ -82,6 +82,23 @@ fi
 t_eq "the baked /var carries the package database" \
 	"$(img_ext4_type "$IMG_SPEC" "${EXPECT_VAR_LOWERDIR}/lib/dpkg/status")" regular
 
+# And it carries no journal directory. journald reads the existence of one as the
+# instruction to store logs on the flash, so the systemd package's empty
+# directory is removed from the copy at build time; an existing directory is a
+# standing invitation for a later configuration change to persist logs without
+# anything saying so. Asserted here as well as on a device because the condition
+# is fully visible in the image, and a dropped or reordered removal should not
+# have to wait for a build, a flash and a boot to be heard about.
+#
+# The directory holding it is read first, because the reader answers a path it
+# cannot see and a path that is not there with the same empty string: without
+# something present to bracket it, a copy that moved would leave the absence
+# below asserting nothing and passing forever.
+t_eq "the factory copy keeps the directory the journal would go in" \
+	"$(img_ext4_type "$IMG_SPEC" "${EXPECT_VAR_LOWERDIR}/log")" directory
+t_eq "and no directory journald would read as permission to persist logs" \
+	"$(img_ext4_type "$IMG_SPEC" "${EXPECT_VAR_LOWERDIR}/log/journal")" ""
+
 # And /var in the root filesystem itself is the empty skeleton the layout
 # leaves behind, so nothing is being read from underneath the overlay.
 if entries=$(img_ext4_ls "$IMG_SPEC" /var); then
@@ -92,11 +109,11 @@ else
 	t_fail "read /var from the root filesystem"
 fi
 
-# The generated fstab, whole. The masks below neutralise the three entries in it
-# that would put state on flash, but a list of known-bad units only defends
+# The generated fstab, whole. The drop-ins below neutralise the three entries in
+# it that would put state on flash, but a list of known-bad units only defends
 # against those three coming back: a fourth entry from a builder bump would
 # mount something writable and pass every other assertion here. Comparing the
-# entry set turns the masks into a closed statement about what was generated.
+# entry set turns the drop-ins into a closed statement about what was generated.
 if content=$(img_ext4_cat "$IMG_SPEC" /etc/fstab); then
 	entries=$(printf '%s\n' "$content" |
 		sed -e 's/#.*//' -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//' |
@@ -118,13 +135,47 @@ else
 	t_fail "read /etc/fstab from the root filesystem"
 fi
 
-# Masked units. A symlink to /dev/null is how systemd is told a unit may never
-# start, including one generated from fstab during image assembly.
-for unit in $EXPECT_MASKED_UNITS; do
-	if link=$(img_ext4_link "$IMG_SPEC" "${units}/${unit}"); then
-		t_eq "${unit} is masked" "$link" /dev/null
+# The three mount units generated from those entries, held back. Each carries a
+# drop-in with a condition no device meets, which is how a unit generated from
+# fstab during image assembly is told never to run. Masking them — the obvious
+# instrument — must not be used, and the brenn-state layer's state.yaml carries
+# why: it costs the whole local-fs.target start job, silently.
+#
+# So the drop-in is asserted for, and the unit path itself is asserted to be
+# empty. Nothing may sit there: a /dev/null symlink is the mask, and a regular
+# file or directory shadows the generated unit outright — /etc outranks the
+# generator's directory, so an inline unit would replace the [Mount] section
+# these drop-ins are written against and the drop-in assertion above would still
+# pass.
+for unit in $EXPECT_NEUTRALIZED_MOUNT_UNITS; do
+	dropin="${units}/${unit}.d/${EXPECT_NEVER_MOUNT_DROPIN}"
+	if content=$(img_ext4_cat "$IMG_SPEC" "$dropin"); then
+		t_eq "${unit} is held back by a condition it cannot meet" \
+			"$(img_ini_value "$content" ConditionPathExists)" \
+			"$EXPECT_NEVER_MOUNT_CONDITION"
 	else
-		t_fail "${unit} is masked" "no unit link at ${units}/${unit}"
+		t_fail "${unit} is held back by a condition it cannot meet" \
+			"no drop-in at ${dropin}"
+	fi
+
+	# ...which is only true while nothing on the image is at that path. The
+	# condition is met by the file existing, so a layer that creates it — a
+	# brenn configuration directory with an unlucky name, a rename left half
+	# done — starts all three of these mounts instead of holding them back, and
+	# every other assertion here stays true. Read inside this loop so the drop-in
+	# above stands as the evidence that the reader can see this image at all.
+	t_eq "and nothing on the image meets ${unit}'s condition" \
+		"$(img_ext4_type "$IMG_SPEC" "$EXPECT_NEVER_MOUNT_CONDITION")" ""
+
+	shadow=$(img_ext4_type "$IMG_SPEC" "${units}/${unit}")
+	if [ -z "$shadow" ]; then
+		t_pass "and nothing shadows the generated ${unit}"
+	else
+		detail="${units}/${unit} is a ${shadow}"
+		if [ "$shadow" = symlink ]; then
+			detail="${detail} to $(img_ext4_link "$IMG_SPEC" "${units}/${unit}")"
+		fi
+		t_fail "and nothing shadows the generated ${unit}" "$detail"
 	fi
 done
 

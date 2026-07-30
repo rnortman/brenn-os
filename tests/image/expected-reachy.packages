@@ -13,6 +13,8 @@
 # stack. Each one is named in a layer under image/layer/brenn.
 curl
 dfu-util
+iproute2
+iw
 openssh-server
 python3-minimal
 rauc
@@ -26,21 +28,29 @@ zstd
 # that a payload package growing a new dependency is visible as such: the full
 # python3 (dfu-util depends on it), the ssh client-side pieces, dbus for
 # rauc's control interface, and the TLS/HTTP and netlink libraries curl,
-# journal upload and the supplicant are built against.
+# journal upload, the supplicant and the link tools are built against.
+#
+# The six libraries iproute2 pulls — libbpf1, libelf1t64, libmnl0, the libtirpc
+# pair and libxtables12 — are read from the package's declared dependencies
+# rather than from a build, which no other line here is: TODO(iproute2-closure).
+# iw needs nothing the supplicant did not already bring.
 dbus
 dbus-bin
 dbus-daemon
 dbus-session-bus-common
 dbus-system-bus-common
+libbpf1
 libbrotli1
 libcbor0.10
 libcurl3t64-gnutls
 libcurl4t64
 libedit2
+libelf1t64
 libfido2-1
 libjson-glib-1.0-0
 libjson-glib-1.0-common
 libmicrohttpd12t64
+libmnl0
 libnghttp2-14
 libnghttp3-9
 libngtcp2-16
@@ -55,6 +65,9 @@ libpython3.13-minimal
 libpython3.13-stdlib
 librtmp1
 libssh2-1t64
+libtirpc-common
+libtirpc3t64
+libxtables12
 openssh-client
 openssh-sftp-server
 python3

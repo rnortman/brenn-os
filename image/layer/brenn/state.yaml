@@ -15,11 +15,10 @@
 # which is the last thing to touch the root filesystem before the image
 # layout moves /var aside.
 #
-# The overlay also carries three units symlinked to /dev/null, which is how a
-# unit is masked. The A/B image layout writes an fstab that bind-mounts
-# /home and /var/log/journal onto the persistent partition and mounts the
-# tryboot selector partition read-write at /bootfs. All three are writable
-# mounts that this product does not want:
+# The A/B image layout writes an fstab that bind-mounts /home and
+# /var/log/journal onto the persistent partition and mounts the tryboot
+# selector partition read-write at /bootfs. All three are writable mounts that
+# this product does not want:
 #
 #   home.mount             no account has a home on persistent storage
 #   var-log-journal.mount  the journal is volatile and uploaded
@@ -27,7 +26,27 @@
 #                          moment it takes to switch slots, by the code that
 #                          switches them
 #
-# The fstab itself is generated during image assembly and is not ours to
-# edit; masking the units it generates is.
+# The fstab itself is generated during image assembly and is not ours to edit,
+# so the units generated from it are where the three are stopped. The overlay
+# holds each one back with a drop-in setting a condition that cannot be met
+# (10-brenn-never.conf), and deliberately not by masking:
+#
+#   Two of those fstab entries carry no nofail, so systemd-fstab-generator makes
+#   the units it generates from them hard requirements of local-fs.target. A
+#   masked unit cannot satisfy a Requires, and local-fs.target is only wanted by
+#   sysinit.target — so systemd drops the whole local-fs.target start job and
+#   says nothing. Everything else reachable only through that target goes with
+#   it: /boot/firmware never mounts and the root filesystem never picks up its
+#   fstab options.
+#
+#   A unit whose start job runs and whose condition fails counts as satisfied
+#   instead, so the target assembles, these three stay unmounted, and the rest
+#   of local-fs.target happens.
+#
+# The condition is a path, and it reads in the direction systemd reads it: the
+# file existing is what lets these mounts run. So the path must not exist
+# anywhere — not in this overlay, not in another layer, not written by a
+# provisioning hook — because the whole mechanism is that one file never being
+# there.
 mmdebstrap:
   packages: []

@@ -51,19 +51,34 @@ dev_eq "no regulatory domain is compiled into the kernel's view" \
 # this comparison are read from the device: the country is site configuration
 # and does not appear in this repository, so what is asserted is that the two
 # readings agree rather than that either equals a value written here.
+#
+# The domain in force is read out of the regulatory database the kernel is
+# holding now, not out of a log line saying it changed: this kernel logs no such
+# line, and the journal it would be in is in RAM and rotates. Parsed here rather
+# than on the device, so the remote command stays one anyone can retype at a
+# bench. The global domain is the one asserted — a per-phy override would be
+# something nothing in this image asks for.
+#
+# The unset domain is a domain: the kernel prints it as country 00, which is the
+# regression this assertion exists for — no regulatory database, or one never
+# applied — so it is parsed like any other and reaches the comparison as 00. Left
+# out of the pattern it would arrive as nothing read at all, and send the next
+# person to look at whether iw works.
 dev_capture "sed -n 's/^[[:space:]]*country=\\([A-Za-z][A-Za-z]\\).*/\\1/p' $(dev_quote "${EXPECT_SUPPLICANT_CONF}") | head -n1"
 provisioned=$(printf '%s' "$DEV_OUT" | tr '[:lower:]' '[:upper:]')
 
-dev_capture "journalctl -k -b --grep 'Regulatory domain changed' -o cat | tail -n1"
-applied=$(printf '%s' "$DEV_OUT" | sed -n 's/.*country: \([A-Z][A-Z]\).*/\1/p')
+dev_capture 'iw reg get'
+regdom=$DEV_OUT
+applied=$(printf '%s\n' "$regdom" |
+	sed -n '/^global$/,$ s/^country \([A-Z0-9][A-Z0-9]\):.*/\1/p' | head -n1)
 
 if [ -z "$provisioned" ]; then
 	t_fail "the provisioned configuration names a regulatory domain" \
 		"no country= in ${EXPECT_SUPPLICANT_CONF}"
 elif [ -z "$applied" ]; then
 	t_fail "the kernel applied the provisioned regulatory domain" \
-		"no regulatory change in this boot's kernel log" \
-		"last line: ${DEV_OUT:-<nothing>}"
+		"no global regulatory domain reported" \
+		"iw reg get: ${regdom:-<nothing>}"
 else
 	t_eq "the kernel applied the provisioned regulatory domain" "$applied" "$provisioned"
 fi

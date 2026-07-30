@@ -91,4 +91,14 @@ else
 		"${failed:-<none reported>}"
 fi
 
+# ...which does not cover a target that was never attempted. `running` means no
+# unit failed, and a unit pulled in by a Wants whose dependencies cannot be
+# assembled is not a failure: systemd drops that whole subtree out of the
+# transaction and logs nothing. local-fs.target is pulled in exactly that way and
+# everything mounted from fstab hangs off it, so this is the assertion that
+# notices a boot in which the firmware partition never mounted and the root never
+# took its fstab options — while the device reports a clean start.
+dev_eq "and the local filesystem target was reached" \
+	"systemctl is-active $(dev_quote "$EXPECT_LOCAL_FS_TARGET")" active
+
 t_done

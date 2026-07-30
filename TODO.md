@@ -153,6 +153,22 @@ Done when the install has been performed, the three items above are readings
 rather than expectations, the observations are folded back into
 `docs/install.md`, and its status note is gone.
 
+## `iproute2-closure`
+
+`tests/image/expected-reachy.packages` is exhaustive and every other line in it
+was read out of a real build. The six libraries added alongside `iproute2` —
+`libbpf1`, `libelf1t64`, `libmnl0`, `libtirpc-common`, `libtirpc3t64`,
+`libxtables12` — were taken from the package's declared dependencies instead,
+because the tools were added to the image between builds.
+
+Deferred rather than resolved because only a build resolves it, and the
+`140-package-set` assertion is exhaustive in both directions: a predicted line
+that is wrong fails that test with the difference named, which is the review this
+entry is asking for.
+
+Done when a build has confirmed the set and the note above the group in the
+manifest is gone.
+
 ## `erofs-root`
 
 The root filesystem is read-only ext4. The image layout supports erofs behind a

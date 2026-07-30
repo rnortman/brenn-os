@@ -28,8 +28,11 @@ dtparam=ant2
 dtparam=i2c_vc=on
 dtoverlay=i2c-fan,emc2301,i2c_csi_dsi,midtemp=45000,maxtemp=65000
 
-# Both head cameras, explicitly declared rather than probed.
-dtoverlay=imx708,rotation=0,cam1
+# The head camera, explicitly declared rather than probed. There is one, on the
+# cam0 connector; the two visible eyes are cosmetic glass with nothing behind
+# them. The vendor configuration declares cam1 as well, which this image drops:
+# nothing is attached to that connector, so the declaration only produces imx708
+# and dw9807 probe errors in every boot log.
 dtoverlay=imx708,rotation=0,cam0
 
 # IMU on i2c4.

@@ -120,6 +120,14 @@ dev_load_target() {
 
 # One command, run by the device's shell, stdout on stdout. The remote exit
 # status is this function's exit status, so a test can assert either.
+#
+# The command is the whole input: the remote end gets no stdin. ssh otherwise
+# reads this process's stdin and forwards it, so an assertion made inside a
+# `while IFS= read -r x; do dev_run …; done <<<"$LIST"` loop hands the rest of
+# the list to the device and the loop ends after one pass — a suite that checks
+# the first entry of every expectation list and reports as if it checked them
+# all. A test that wants to stream something to the device has to arrange that
+# itself.
 dev_run() {
 	"$DEV_SSH" \
 		-o BatchMode=yes \
@@ -127,7 +135,7 @@ dev_run() {
 		"${DEV_MUX_OPTS[@]}" \
 		"${DEV_SSH_OPTS[@]}" \
 		"${DEV_USER}@${DEV_HOST}" \
-		-- "$1"
+		-- "$1" </dev/null
 }
 
 # The same, with stdout captured in DEV_OUT and the remote stderr folded into

@@ -24,7 +24,16 @@
 #
 # The link files in the overlay must replace the device layer's generated
 # defaults; overlay-after-hooks ordering is what makes that work.
+#
+# iproute2 and iw ship because the device acceptance suite is held to what they
+# report: the listener census is a security invariant and program attribution
+# from /proc is a bad reimplementation of `ss`, and `iw reg get` is the only
+# reading of the regulatory domain actually in force that does not depend on a
+# log line surviving rotation. They are also the tools anyone reaches for first
+# when a link misbehaves on a unit that is only reachable over that link.
 mmdebstrap:
   packages:
     - wpasupplicant
     - wireless-regdb
+    - iproute2
+    - iw

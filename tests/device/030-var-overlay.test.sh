@@ -65,8 +65,8 @@ dev_exists "the write landed on the RAM half" "${EXPECT_VAR_UPPERDIR}/tmp/${prob
 dev_run "rm -f /var/tmp/${probe}" >/dev/null 2>&1
 
 # Nothing else is mounted under /var. The two entries the layout's own fstab
-# would have added — the journal and a per-slot bind onto the flash — are
-# masked in the image, and their absence here is what proves the masking took.
+# would have added — the journal and a per-slot bind onto the flash — are held
+# back in the image, and their absence here is what proves that took.
 dev_eq_text "/var carries no further mounts" \
 	'findmnt -rno TARGET --submounts /var' /var
 

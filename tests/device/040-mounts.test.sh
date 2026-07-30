@@ -45,7 +45,7 @@ dev_eq "/data resolves to the persistent partition" \
 dev_eq "/data is the writable partition, not a directory on the root" \
 	'findmnt -no TARGET --target /data' /persistent
 
-# The mounts the layout would have given us, masked in the image because each
+# The mounts the layout would have given us, held back in the image because each
 # one is a steady write to the flash. Their absence is what makes the census
 # above the whole story.
 while IFS= read -r target; do

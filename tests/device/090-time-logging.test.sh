@@ -4,9 +4,8 @@
 #
 # These two belong together because one depends on the other: the upload is TLS
 # to a private certificate authority, and a device that thinks it is 1970
-# rejects every certificate it is shown. So the ordering that the image suite
-# reads out of the unit files has a consequence only a running device can show
-# — the clock was set, and then the logs went somewhere.
+# rejects every certificate it is shown. So what only a running device can show
+# is the pair of them together — the clock was set, and the logs went somewhere.
 #
 # Where they go is site information and does not appear in this repository, so
 # nothing here compares an address to a value written down. What is asserted is
@@ -32,10 +31,20 @@ dev_open
 dev_eq "the time synchronisation service is running" \
 	"systemctl is-active $(dev_quote "$EXPECT_TIMESYNCD_UNIT")" active
 
-# The target every TLS-dependent unit is ordered after. It is reached when the
-# clock has been set, not when the service started.
-dev_eq "the time-sync target has been reached" \
-	"systemctl is-active $(dev_quote "$EXPECT_TIME_SYNC_TARGET")" active
+# time-sync.target is deliberately not asserted. With plain timesyncd it is a
+# passive target that nothing pulls, so it stays inactive on a device whose clock
+# is perfectly well set — and it would be reached at service start rather than at
+# synchronisation even if something did pull it. Only systemd-time-wait-sync
+# gives it the reached-when-set meaning, and that unit blocks the target until
+# the clock is synchronised with no timeout: on an appliance that has to come up
+# with its network absent, that holds startup jobs open indefinitely.
+#
+# What covers the cold clock instead is the two TLS consumers ordered after the
+# target — the journal uploader and the application fetch — both of which retry
+# for as long as the device is up, so a first handshake against a 1970 clock costs
+# retries rather than correctness. If that ever proves insufficient, enabling
+# systemd-time-wait-sync and having those units want the target is the mechanism,
+# at the availability cost above.
 
 dev_eq "the clock is synchronised to the network" \
 	'timedatectl show -p NTPSynchronized --value' "$EXPECT_NTP_SYNCHRONIZED"

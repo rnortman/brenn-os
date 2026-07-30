@@ -1,7 +1,13 @@
-# The carrier's two USB audio devices: the microphone array and the audio
-# interface. Both are addressed through raw USB transfers as well as through
-# ALSA, so the account that runs the application needs the USB device node
+# The carrier's USB audio board — one board, carrying the microphone array and
+# the audio interface, which is addressed through raw USB transfers as well as
+# through ALSA: the account that runs the application needs the USB device node
 # itself and not only /dev/snd.
+#
+# Two rules for one board. It enumerates under the vendor's own id once its
+# firmware has been updated, and under the id of the module it is built on
+# before that, so the pair is two firmware generations of the same hardware and
+# never two devices. Both are kept so that a board still on the older firmware
+# is permissioned too.
 #
 # Access is by group. The account is a member of `audio`, which already owns
 # the ALSA nodes, so one membership covers both ways of reaching the same

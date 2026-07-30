@@ -63,12 +63,15 @@ dev_eq "the watchdog is running" \
 # the countdown is being reset by the thing whose liveness it measures; a
 # watchdog opened by nothing would simply have reset the board already, and one
 # opened by some other process would be measuring that process instead.
-dev_capture "readlink /proc/1/fd/* 2>/dev/null | grep -c -x $(dev_quote "$EXPECT_WATCHDOG_DEVICE") || true"
+#
+# The descriptor names the numbered node, which is the one systemd reports having
+# opened, and not the unnumbered alias the assertion above reads.
+dev_capture "readlink /proc/1/fd/* 2>/dev/null | grep -c -x $(dev_quote "$EXPECT_WATCHDOG_PID1_NODE") || true"
 if [ "${DEV_OUT:-0}" -ge 1 ] 2>/dev/null; then
 	t_pass "process 1 holds the watchdog open"
 else
 	t_fail "process 1 holds the watchdog open" \
-		"descriptors on ${EXPECT_WATCHDOG_DEVICE}: ${DEV_OUT:-<nothing>}"
+		"descriptors on ${EXPECT_WATCHDOG_PID1_NODE}: ${DEV_OUT:-<nothing>}"
 fi
 
 t_done

@@ -54,9 +54,30 @@ t_eq "the device accepts bundles built for this product" \
 # This device depends on the running slot resolving through the command-line
 # token it shipped, stated as an assertion rather than merely reading the
 # reported value.
+#
+# RAUC canonicalises that token before matching it to a slot and reports what it
+# resolved, so the expectation is resolved on the device too. The assertion still
+# says the running slot came from the command line we shipped, and it says it on
+# either slot — which a partition path written down here could not.
+#
+# Both sides have to be read before they can be compared, because they fail
+# empty for one and the same cause: a by-slot link that is missing or dangling
+# resolves to nothing here and leaves RAUC unable to name the slot it booted, so
+# comparing the two readings as they come would report the assertion this file
+# exists for as passing in exactly the case where slot resolution is broken.
 root_token=$(printf '%s\n' "$EXPECT_CMDLINE" | tr ' ' '\n' | sed -n 's/^root=//p')
-t_eq "the running slot was resolved through the command line we shipped" \
-	"$(rauc_value RAUC_SYSTEM_BOOTED_BOOTNAME)" "$root_token"
+status=0
+dev_capture "readlink -f $(dev_quote "$root_token")" || status=$?
+resolved_token=$DEV_OUT
+reported_bootname=$(rauc_value RAUC_SYSTEM_BOOTED_BOOTNAME)
+if [ "$status" -ne 0 ] || [ -z "$resolved_token" ] || [ -z "$reported_bootname" ]; then
+	t_fail "the running slot was resolved through the command line we shipped" \
+		"${root_token} resolves to: ${resolved_token:-<nothing>} (status ${status})" \
+		"rauc reports booted bootname: ${reported_bootname:-<nothing>}"
+else
+	t_eq "the running slot was resolved through the command line we shipped" \
+		"$reported_bootname" "$resolved_token"
+fi
 
 # Exactly one slot is the booted one. Two would mean the resolution matched
 # both bit-identical slots; none means it matched neither, and RAUC would refuse

@@ -27,6 +27,13 @@ rm -rf "$factory"
 mkdir -p "${rootfs}/usr/share/factory"
 rsync -aHAXS --numeric-ids --delete "${rootfs}/var/" "${factory}/"
 
+# The systemd package ships an empty /var/log/journal, and journald reads the
+# existence of that directory as the instruction to store logs on disk. The
+# journal here is volatile and uploaded, so the directory has no use and is a
+# standing invitation for a configuration change to start writing logs to flash
+# without anything saying so.
+rm -rf "${factory}/log/journal"
+
 # machine-id is identity, not state: the copy must not carry one, and the
 # legacy path stays a symlink to the one place it is resolved from.
 if [ -d "${factory}/lib/dbus" ]; then

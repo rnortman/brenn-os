@@ -24,6 +24,13 @@ cat >"$stub" <<'STUB'
 #!/bin/sh
 : >"$SSH_ARGV_LOG"
 for a in "$@"; do printf '%s\n' "$a" >>"$SSH_ARGV_LOG"; done
+# ssh reads its own stdin and forwards it to the remote command, which is the
+# behaviour one assertion here is about. It is behind a flag rather than always
+# on because draining stdin unconditionally would hang every other run whose
+# stdin is a terminal.
+if [ "${SSH_STUB_DRAIN_STDIN:-0}" = 1 ]; then
+	cat >/dev/null
+fi
 if [ "${SSH_STUB_UNREACHABLE:-0}" = 1 ]; then
 	echo "ssh: connect to host port 22: No route to host" >&2
 	exit 255
@@ -79,6 +86,15 @@ case "${DRIVE:-run}" in
 	quote)
 		dev_load_target
 		dev_run "cat $(dev_quote "$QUOTE_VALUE")" >/dev/null
+		;;
+	stdin)
+		dev_load_target
+		list=$(printf 'one\ntwo\nthree\n')
+		while IFS= read -r item; do
+			[ -n "$item" ] || continue
+			dev_run "echo ${item}" >/dev/null
+			printf 'checked %s\n' "$item"
+		done <<<"$list"
 		;;
 	firmware)
 		dev_load_expectations
@@ -201,11 +217,11 @@ out=$(drive DRIVE=run BRENN_DEVICE_HOST=unit.invalid SSH_STUB_STATUS=3)
 t_eq "the remote exit status is reported" "$?" 3
 
 # The assertion helpers, in both polarities. Every device test is built out of
-# these — the read-only root, the masked mount points and the refusals that go
-# with them are thirty assertions resting on dev_refuses alone — and one of them
-# inverted or defanged would leave the whole suite passing against a device that
-# does not hold. Nothing at the bench would find that either, because the
-# failure mode is a pass.
+# these — the read-only root, the mount points that must not exist and the
+# refusals that go with them are thirty assertions resting on dev_refuses alone
+# — and one of them inverted or defanged would leave the whole suite passing
+# against a device that does not hold. Nothing at the bench would find that
+# either, because the failure mode is a pass.
 out=$(drive DRIVE=assert BRENN_DEVICE_HOST=unit.invalid)
 t_contains "a matching value passes" "$out" "PASS  eq"
 t_contains "and so does the multi-line form" "$out" "PASS  eq_text"
@@ -238,6 +254,16 @@ t_contains "and is absent" "$out" "PASS  absent"
 drive DRIVE=quote BRENN_DEVICE_HOST=unit.invalid QUOTE_VALUE="it's a file" >/dev/null
 t_contains "a value with a space and a quote in it reaches the device whole" \
 	"$(argv)" "cat 'it'\\''s a file'"
+
+# A list is checked entry by entry. Several device tests hold an expectation
+# that is a list and loop over it with `while read`, which reads from the same
+# stdin ssh would consume if it were allowed to: one assertion would run, the
+# rest of the list would be handed to the device, and the suite would report a
+# pass on the first entry as if it had checked them all. Nothing at the bench
+# finds that — the output is short by lines nobody counted.
+out=$(drive DRIVE=stdin BRENN_DEVICE_HOST=unit.invalid SSH_STUB_DRAIN_STDIN=1)
+t_eq_text "every entry of a list gets its own assertion" \
+	"$out" "$(printf 'checked one\nchecked two\nchecked three')"
 
 # Which partition the firmware booted. It is a device-tree property read as
 # bytes, and an error message has digits in it too — so the reading is only a
