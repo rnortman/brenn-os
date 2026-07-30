@@ -19,7 +19,8 @@ help:
 	@echo "Repo-root targets:"
 	@echo "  make check         the gate (shell lint, layer metadata, host tests), same contents CI runs"
 	@echo "  make image         build an image        (PROFILE=$(PROFILE))"
-	@echo "  make bundle        pack the last build into a signed update bundle"
+	@echo "  make bundle        pack the last build into a signed update bundle (PROFILE=$(PROFILE))"
+	@echo "                     signing material: see docs/provisioning.md; paths via .local/bundle.conf"
 	@echo "  make clean         remove work/ — the build output, its scratch and its caches"
 	@echo "  make test-host     assert against the tree — no image, no device"
 	@echo "  make test-image    assert against the built image"
@@ -48,8 +49,10 @@ image:
 
 # Packs what `image` produced; does not build. The signing material comes from
 # the environment — BRENN_BUNDLE_CERT and BRENN_BUNDLE_KEY, plus an optional
-# BRENN_BUNDLE_KEYRING to verify the result against — because no key of any
-# kind is ever in this tree.
+# BRENN_BUNDLE_KEYRING to verify the result against, which defaults to the
+# certificate — because no key of any kind is ever in this tree. The same knobs
+# can be written once into .local/bundle.conf, which is gitignored and holds
+# paths to material kept outside the repo.
 .PHONY: bundle
 bundle:
 	scripts/make-bundle.sh --profile $(PROFILE)
