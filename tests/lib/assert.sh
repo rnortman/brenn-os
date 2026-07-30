@@ -64,12 +64,15 @@ t_builder_file() {
 	t_done
 }
 
+# Both values are quoted in the failure output. Leading and trailing whitespace
+# is otherwise invisible, and this assertion's one job is making the difference
+# legible: two identical-looking lines send the reader after the wrong cause.
 t_eq() {
 	local desc=$1 actual=$2 expected=$3
 	if [ "$actual" = "$expected" ]; then
 		t_pass "$desc"
 	else
-		t_fail "$desc" "expected: ${expected}" "actual:   ${actual}"
+		t_fail "$desc" "expected: '${expected}'" "actual:   '${actual}'"
 	fi
 }
 

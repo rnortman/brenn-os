@@ -85,8 +85,8 @@ if [ "$state" = "$EXPECT_SYSTEM_STATE" ]; then
 else
 	failed=$(dev_run 'systemctl list-units --state=failed --no-legend --plain' 2>&1)
 	t_fail "the boot completed and nothing failed" \
-		"state: ${state}" \
-		"expected: ${EXPECT_SYSTEM_STATE}" \
+		"state:    '${state}'" \
+		"expected: '${EXPECT_SYSTEM_STATE}'" \
 		"failed units:" \
 		"${failed:-<none reported>}"
 fi

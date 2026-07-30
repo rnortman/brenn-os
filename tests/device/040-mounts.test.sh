@@ -43,7 +43,7 @@ t_eq_text "exactly one block-backed filesystem is writable" \
 dev_eq "/data resolves to the persistent partition" \
 	'readlink -f /data' /persistent
 dev_eq "/data is the writable partition, not a directory on the root" \
-	'findmnt -no TARGET --target /data' /persistent
+	'findmnt -rno TARGET --target /data' /persistent
 
 # The mounts the layout would have given us, held back in the image because each
 # one is a steady write to the flash. Their absence is what makes the census
@@ -57,9 +57,9 @@ done <<<"$EXPECT_ABSENT_MOUNTPOINTS"
 # The application's filesystem: in RAM, capped, and present before anything
 # tries to unpack a payload into it.
 dev_eq "the application filesystem is a tmpfs" \
-	"findmnt -no FSTYPE $(dev_quote "$EXPECT_APP_DIR")" "$EXPECT_APP_MOUNT_FSTYPE"
+	"findmnt -rno FSTYPE $(dev_quote "$EXPECT_APP_DIR")" "$EXPECT_APP_MOUNT_FSTYPE"
 dev_eq "the application filesystem is capped at the profile's size" \
-	"findmnt -no SIZE -b $(dev_quote "$EXPECT_APP_DIR")" \
+	"findmnt -rno SIZE -b $(dev_quote "$EXPECT_APP_DIR")" \
 	"$((EXPECT_APP_MOUNT_SIZE_K * 1024))"
 
 # The slot links, and the firmware's own report of what it booted. A mismatch

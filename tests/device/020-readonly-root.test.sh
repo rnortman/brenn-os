@@ -17,11 +17,15 @@ set -uo pipefail
 
 dev_open
 
-dev_eq "the root filesystem is ext4" 'findmnt -no FSTYPE /' ext4
+# Raw output throughout: without `-r`, findmnt pads some columns to their width
+# even under `-n`, and a padded field compared against an exact expectation
+# fails on trailing spaces that nothing on screen shows. Which columns pad is a
+# util-linux internal, so no reading here rests on it.
+dev_eq "the root filesystem is ext4" 'findmnt -rno FSTYPE /' ext4
 dev_eq "the root filesystem is mounted read-only" \
-	'findmnt -no OPTIONS / | cut -d, -f1' ro
+	'findmnt -rno OPTIONS / | cut -d, -f1' ro
 dev_eq "the firmware partition is mounted read-only" \
-	'findmnt -no OPTIONS /boot/firmware | cut -d, -f1' ro
+	'findmnt -rno OPTIONS /boot/firmware | cut -d, -f1' ro
 
 # The assertion the two above exist for. A mount option can be reported and not
 # enforced; a write that fails is the property itself.
@@ -42,7 +46,7 @@ dev_refuses "writing to /usr is refused" 'touch /usr/brenn-write-probe'
 # really mounted. The major:minor behind / comes from the mount, cannot be
 # derived from the link, and disagrees the moment the two do.
 status=0
-dev_capture 'findmnt -no MAJ:MIN /' || status=$?
+dev_capture 'findmnt -rno MAJ:MIN /' || status=$?
 mounted_devno=$DEV_OUT
 if [ "$status" -ne 0 ] || [ -z "$mounted_devno" ]; then
 	t_fail "the mounted root is the partition the active-slot link resolves to" \

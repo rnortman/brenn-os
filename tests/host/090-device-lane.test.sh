@@ -35,7 +35,9 @@ if [ "${SSH_STUB_UNREACHABLE:-0}" = 1 ]; then
 	echo "ssh: connect to host port 22: No route to host" >&2
 	exit 255
 fi
-echo "${SSH_STUB_OUT:-remote-ok}"
+# Set but empty is a device that answered with nothing, which is its own case
+# here; only an unset variable takes the default.
+echo "${SSH_STUB_OUT-remote-ok}"
 exit "${SSH_STUB_STATUS:-0}"
 STUB
 chmod 0755 "$stub"
@@ -104,6 +106,17 @@ case "${DRIVE:-run}" in
 		else
 			echo "unreadable ${DEV_PARTITION:-<nothing>}"
 		fi
+		;;
+	rauc)
+		printf 'compatible %s\n' "$(dev_rauc_value "$RAUC_REPORT" RAUC_SYSTEM_COMPATIBLE)"
+		printf 'bootname %s\n' "$(dev_rauc_value "$RAUC_REPORT" RAUC_SLOT_BOOTNAME_1)"
+		for i in $(dev_rauc_slot_indices "$RAUC_REPORT" STATE booted); do
+			printf 'booted %s\n' "$i"
+		done
+		for i in $(dev_rauc_slot_indices "$RAUC_REPORT" CLASS rootfs); do
+			printf 'rootfs %s\n' "$i"
+		done
+		echo end
 		;;
 esac
 DRIVER
@@ -275,6 +288,51 @@ out=$(drive DRIVE=firmware BRENN_DEVICE_HOST=unit.invalid SSH_STUB_STATUS=1 \
 	SSH_STUB_OUT="od: cannot open the property: error 2")
 t_eq "digits in a failure are not a partition number" "$out" "unreadable 2"
 
+# Reading the update mechanism's report. Which slot is running, which pair the
+# device may be told to install into, and whether either has been refused are
+# all decided by parsing this text — and the parse is the half of that question
+# no device is needed to answer. The alternative is the one this lane's header
+# names: finding a defect in it by spending a run at the bench.
+report=$(
+	cat <<'REPORT'
+RAUC_SYSTEM_COMPATIBLE='brenn-os/cm4'
+RAUC_SYSTEM_BOOTED_BOOTNAME='/dev/mmcblk0p5'
+RAUC_SLOT_CLASS_0='rootfs'
+RAUC_SLOT_STATE_0='inactive'
+RAUC_SLOT_BOOTNAME_0='A'
+RAUC_SLOT_CLASS_1='rootfs'
+RAUC_SLOT_STATE_1='booted'
+RAUC_SLOT_BOOTNAME_1='B'
+RAUC_SLOT_CLASS_2='boot'
+RAUC_SLOT_STATE_2='inactive'
+REPORT
+)
+
+out=$(drive DRIVE=rauc BRENN_DEVICE_HOST=unit.invalid RAUC_REPORT="$report")
+t_eq_text "a healthy report names its values, its booted slot and its pairs" "$out" \
+	"$(printf 'compatible brenn-os/cm4\nbootname B\nbooted 1\nrootfs 0\nrootfs 1\nend')"
+
+# Two booted slots would mean the running slot resolved to both bit-identical
+# pairs, and none that it resolved to neither. Both are findings 120 asserts on,
+# so both have to survive the parse as themselves rather than as each other.
+out=$(drive DRIVE=rauc BRENN_DEVICE_HOST=unit.invalid \
+	RAUC_REPORT="$(printf '%s\n' "$report" | sed "s/STATE_0='inactive'/STATE_0='booted'/")")
+t_eq_text "a report with two booted slots yields both" "$out" \
+	"$(printf 'compatible brenn-os/cm4\nbootname B\nbooted 0\nbooted 1\nrootfs 0\nrootfs 1\nend')"
+
+out=$(drive DRIVE=rauc BRENN_DEVICE_HOST=unit.invalid \
+	RAUC_REPORT="$(printf '%s\n' "$report" | sed "s/STATE_1='booted'/STATE_1='inactive'/")")
+t_eq_text "a report with no booted slot yields none" "$out" \
+	"$(printf 'compatible brenn-os/cm4\nbootname B\nrootfs 0\nrootfs 1\nend')"
+
+# And a report whose class spelling drifted names no pair at all. 120's refusal
+# check is a loop over these indices, and a loop over nothing prints nothing and
+# passes, so the empty result is what that test has to notice.
+out=$(drive DRIVE=rauc BRENN_DEVICE_HOST=unit.invalid \
+	RAUC_REPORT="$(printf '%s\n' "$report" | sed "s/='rootfs'/='system'/")")
+t_eq_text "a report naming no rootfs slot yields no indices" "$out" \
+	"$(printf 'compatible brenn-os/cm4\nbootname B\nbooted 1\nend')"
+
 # A device that is configured and cannot be reached skips the suite rather than
 # failing every assertion in it. 010 is what fails in that case, and it is the
 # only test that opens the lane itself.
@@ -306,8 +364,28 @@ case "$out" in
 	*) t_fail "a value that never arrives fails" "output: ${out}" ;;
 esac
 case "$out" in
-	*"last: "*remote-ok*) t_pass "the failure reports what the device last said" ;;
+	*"last:     'remote-ok'"*) t_pass "the failure reports what the device last said" ;;
 	*) t_fail "the failure reports what the device last said" "output: ${out}" ;;
+esac
+
+# And reports it delimited, for the reason t_eq delimits its own: this helper
+# waits on readings from device tools that pad their output, and a reading that
+# differs from the expectation by trailing whitespace otherwise prints as two
+# identical lines — at the end of a wait, on the far side of a radio the suite
+# just dropped, which is the worst place in the lane to be sent after the wrong
+# cause.
+out=$(drive DRIVE=wait BRENN_DEVICE_HOST=unit.invalid WAIT_EXPECT=remote-ok WAIT_SECONDS=1 \
+	SSH_STUB_OUT="remote-ok  ")
+case "$out" in
+	*"last:     'remote-ok  '"*) t_pass "whitespace that made the reading differ is visible" ;;
+	*) t_fail "whitespace that made the reading differ is visible" "output: ${out}" ;;
+esac
+
+out=$(drive DRIVE=wait BRENN_DEVICE_HOST=unit.invalid WAIT_EXPECT=remote-ok WAIT_SECONDS=1 \
+	SSH_STUB_OUT=)
+case "$out" in
+	*"last:     ''"*) t_pass "and a device that said nothing reads as nothing" ;;
+	*) t_fail "and a device that said nothing reads as nothing" "output: ${out}" ;;
 esac
 if [ "$elapsed" -ge 2 ] && [ "$elapsed" -lt 15 ]; then
 	t_pass "the wait ends when its window does (${elapsed}s)"

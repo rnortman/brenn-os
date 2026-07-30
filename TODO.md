@@ -169,6 +169,30 @@ entry is asking for.
 Done when a build has confirmed the set and the note above the group in the
 manifest is gone.
 
+## `boot-write-census`
+
+`tests/device/110-flash-budget.test.sh` measures the flash write budget of an
+*idle* device: it flushes everything pending before taking its baseline, so
+every write made earlier in the boot lands in the baseline rather than in the
+measured window. That is deliberate — the window then holds a live writer and
+nothing else — but it leaves the other half of the budget unmeasured. Nothing in
+either suite counts what a single boot writes.
+
+The sanctioned boot write is the update mechanism marking the running slot good,
+which rewrites one small status file. A unit wears its flash on boot writes as
+surely as on steady ones, so a new unit that writes state at every boot, or a
+mark-good that grows a second write, passes the whole suite today.
+
+Deferred because the assertion needs two things this change cannot settle: a
+place to read the counters early enough in boot to bracket those writes — the
+device lane reads them over SSH, which is long after — and a budget for the
+sanctioned write, a number nobody has measured. The bring-up discipline puts a
+first reading in front of a person before it is baked in as truth, so the budget
+is not something a first run may choose for itself.
+
+Done when a boot's writes are counted against a reviewed budget and the
+`TODO(boot-write-census)` comment in 110 is gone.
+
 ## `erofs-root`
 
 The root filesystem is read-only ext4. The image layout supports erofs behind a

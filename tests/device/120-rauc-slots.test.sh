@@ -33,19 +33,21 @@ dev_open
 
 # One reading, parsed here. The shell form is stable output meant for exactly
 # this, and taking it once keeps every assertion below about the same instant.
+#
+# The suite's idiom for a captured exit status is a local called `status`;
+# this variable cannot use that name without shadowing it.
 dev_capture 'rauc status --output-format=shell'
-status=$DEV_OUT
-if ! printf '%s\n' "$status" | grep -q '^RAUC_SYSTEM_COMPATIBLE='; then
+report=$DEV_OUT
+if ! printf '%s\n' "$report" | grep -q '^RAUC_SYSTEM_COMPATIBLE='; then
 	t_fail "the update mechanism answers" \
 		"rauc status did not report a system" \
-		"output: ${status:-<nothing>}"
+		"output: ${report:-<nothing>}"
 	t_done
 fi
 t_pass "the update mechanism answers"
 
-# A shell-quoted assignment; the value is what is inside the quotes.
 rauc_value() {
-	printf '%s\n' "$status" | sed -n "s/^$1='\\(.*\\)'\$/\\1/p" | head -n1
+	dev_rauc_value "$report" "$1"
 }
 
 t_eq "the device accepts bundles built for this product" \
@@ -82,8 +84,7 @@ fi
 # Exactly one slot is the booted one. Two would mean the resolution matched
 # both bit-identical slots; none means it matched neither, and RAUC would refuse
 # to install at all.
-booted_indices=$(printf '%s\n' "$status" |
-	sed -n "s/^RAUC_SLOT_STATE_\\([0-9]*\\)='booted'\$/\\1/p")
+booted_indices=$(dev_rauc_slot_indices "$report" STATE booted)
 booted_count=$(printf '%s' "$booted_indices" | grep -c . || true)
 t_eq "exactly one slot is running" "$booted_count" 1
 if [ "$booted_count" != "1" ]; then
@@ -154,12 +155,24 @@ dev_eq "and the backend commits to the same one" \
 # Neither pair has been refused. A refusal is a marker on the persistent
 # partition, and one that exists before any update ever ran means something
 # marked a slot bad that nobody installed.
-for index in $(printf '%s\n' "$status" |
-	sed -n "s/^RAUC_SLOT_CLASS_\\([0-9]*\\)='rootfs'\$/\\1/p"); do
-	t_eq "slot $(rauc_value "RAUC_SLOT_BOOTNAME_${index}") has not been refused" \
-		"$(rauc_value "RAUC_SLOT_BOOT_STATUS_${index}")" \
-		"$EXPECT_RAUC_SLOT_STATUS_GOOD"
-done
+#
+# The slots are counted before they are checked. This assertion is a loop over
+# whatever the report called a rootfs slot, and a loop over nothing prints
+# nothing and passes: a report that stopped spelling the class the way this
+# expects would retire the marker assertion in silence, which is the one
+# outcome a check for a bad-slot marker must not have.
+mapfile -t rootfs_indices < <(dev_rauc_slot_indices "$report" CLASS rootfs)
+if [ "${#rootfs_indices[@]}" -eq 0 ]; then
+	t_fail "neither pair has been refused" \
+		"the report names no rootfs slot, so no slot was checked" \
+		"output: ${report:-<nothing>}"
+else
+	for index in "${rootfs_indices[@]}"; do
+		t_eq "slot $(rauc_value "RAUC_SLOT_BOOTNAME_${index}") has not been refused" \
+			"$(rauc_value "RAUC_SLOT_BOOT_STATUS_${index}")" \
+			"$EXPECT_RAUC_SLOT_STATUS_GOOD"
+	done
+fi
 
 # The deadman is loaded and waiting. It is what ends a trial boot that came up
 # and never became healthy, and a timer that is not running is a candidate that

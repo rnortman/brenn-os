@@ -212,6 +212,10 @@ dev_refuses() {
 # device is recovering is a retry and not a finding, including the case where
 # the failing command is ssh itself: the transport this lane runs over may be
 # the thing that is coming back.
+#
+# Both values are quoted in the failure output, for the reason t_eq quotes its
+# own: a device reading that differs only in whitespace prints as two identical
+# lines and sends the reader after the wrong cause. Empty output reads as ''.
 dev_wait() {
 	local desc=$1 cmd=$2 expected=$3 seconds=$4 start=$SECONDS elapsed
 	while :; do
@@ -223,7 +227,8 @@ dev_wait() {
 		fi
 		if [ "$elapsed" -ge "$seconds" ]; then
 			t_fail "$desc" "gave up after ${elapsed}s of ${seconds}s" \
-				"expected: ${expected}" "last:     ${DEV_OUT:-<nothing>}"
+				"expected: '${expected}'" \
+				"last:     '${DEV_OUT}'"
 			return 1
 		fi
 		sleep "${DEV_POLL_INTERVAL:-2}"
@@ -256,6 +261,25 @@ dev_firmware_partition() {
 		status=$?
 	DEV_PARTITION=${DEV_OUT//[^0-9]/}
 	[ "$status" -eq 0 ] && [ -n "$DEV_PARTITION" ]
+}
+
+# The two reads of a `rauc status --output-format=shell` report, taking the
+# report as text rather than fetching it. They live here, and not beside their
+# one caller, because they are ordinary parsing — the half of this lane the
+# repository can exercise without a device — and a defect in them costs a run at
+# the bench: a report that parses to nothing turns every assertion about the
+# running slot into an assertion about the empty string, and one of those is a
+# loop that then checks no slots at all.
+#
+# The value of a shell-quoted assignment is what is inside the quotes.
+dev_rauc_value() {
+	printf '%s\n' "$1" | sed -n "s/^$2='\\(.*\\)'\$/\\1/p" | head -n1
+}
+
+# The indices of the slots whose field holds a given value, one per line:
+# `dev_rauc_slot_indices "$report" STATE booted`.
+dev_rauc_slot_indices() {
+	printf '%s\n' "$1" | sed -n "s/^RAUC_SLOT_$2_\\([0-9]*\\)='$3'\$/\\1/p"
 }
 
 # The partition number of a device node, from its trailing digits, so that it

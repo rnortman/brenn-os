@@ -15,6 +15,14 @@
 # provisioning, staging an update bundle, committing a slot — and none of them
 # is happening while this runs.
 #
+# Those events end before the window opens, but their writes do not: the
+# persistent filesystem is mounted with a commit interval, so a write staged
+# through its journal reaches the flash up to that interval plus the writeback
+# expiry after the event that made it. On a run started soon after boot — where
+# the slot was marked good moments earlier — that drain lands inside the window
+# and reads as a live writer. The sync below is what separates the drain from
+# the measurement.
+#
 # A nonzero reading is a finding, not a number to widen the limit to: it means
 # something is writing that nobody decided should. The failure names the
 # partition, because "the persistent partition" and "a system slot" are very
@@ -43,9 +51,23 @@ window=$EXPECT_IDLE_WINDOW_SECONDS
 #
 # The whole disk and each of its partitions are read together, so that a
 # surprise can be attributed rather than only noticed.
+#
+# `sync` first, and inside the same session: it returns only once everything
+# pending is on the flash, so whatever a boot-time event left draining is
+# counted into the baseline. What the window then measures is a writer that is
+# still active, which is the only thing this test is asking about. A writer
+# that stopped before the sync is out of scope here — a zero-write *boot* is a
+# different assertion, not a wider limit on this one.
+# TODO(boot-write-census): nothing measures what a boot writes.
+#
+# The measurement's whole meaning rests on that sync having returned
+# successfully, so it is joined to the rest with `&&`: a sync that failed is the
+# session's status, and fails the reading below. Sequenced with `;` it would be
+# invisible — the snapshots would still parse and subtract, on a device whose
+# flash is erroring, and print as the invariant holding.
 snapshot="for f in $(dev_quote "${disk}/stat") $(dev_quote "$disk")/*/stat; do printf '%s %s\\n' \"\$f\" \"\$(awk '{print \$7}' \"\$f\")\"; done"
 status=0
-dev_capture "${snapshot}; echo ---; sleep ${window}; ${snapshot}" || status=$?
+dev_capture "sync && { ${snapshot}; echo ---; sleep ${window}; ${snapshot}; }" || status=$?
 
 # A counter nobody read is not a counter that stayed still, and the difference
 # between the two is the whole value of this measurement. The session is the

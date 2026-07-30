@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
-# The assertion helpers, at the one point where they decide a verdict instead of
-# reporting one.
+# The assertion helpers, at the two points where they are more than a wrapper
+# around a comparison: where they decide a verdict instead of reporting one, and
+# where the report is the only thing standing between a reader and the wrong
+# cause.
 #
 # A skip tells the runner the script checked nothing, and the runner counts that
 # as an honest zero. Reached past an assertion that has already failed, that
@@ -44,6 +46,9 @@ case "$DRIVE" in
 			"the builder file is where it is expected" \
 			"a bump moved it"
 		;;
+	eq)
+		t_eq "a device reading" "179:5  " "179:5"
+		;;
 esac
 t_done
 DRIVER
@@ -80,5 +85,18 @@ esac
 
 out=$(drive DRIVE=builder FAIL_FIRST=1)
 t_eq "an unchecked-out builder below a failure fails" "$?" 1
+
+# A difference that is invisible in the values has to be visible in the report.
+# The device lane compares readings from tools that pad their columns, and an
+# undelimited report prints the expectation and the reading as two identical
+# lines when they differ by two trailing spaces — which sends the reader after
+# any cause but the one in front of them.
+out=$(drive DRIVE=eq)
+t_eq "values differing only in whitespace do not match" "$?" 1
+case "$out" in
+	*"expected: '179:5'"*"actual:   '179:5  '"*)
+		t_pass "and both are delimited, so the difference is on screen" ;;
+	*) t_fail "and both are delimited, so the difference is on screen" "output: ${out}" ;;
+esac
 
 t_done

@@ -23,14 +23,17 @@ set -uo pipefail
 
 dev_open
 
-dev_eq "/var is an overlay" 'findmnt -no FSTYPE /var' "$EXPECT_VAR_FSTYPE"
+# Raw output, here and below: findmnt pads some columns to their width even
+# under `-n`, and padding a value that is then compared exactly fails on
+# whitespace nothing on screen shows.
+dev_eq "/var is an overlay" 'findmnt -rno FSTYPE /var' "$EXPECT_VAR_FSTYPE"
 dev_eq "the RAM half of the overlay is a tmpfs" \
-	"findmnt -no FSTYPE $(dev_quote "$EXPECT_VAR_UPPER_MOUNT")" \
+	"findmnt -rno FSTYPE $(dev_quote "$EXPECT_VAR_UPPER_MOUNT")" \
 	"$EXPECT_VAR_UPPER_FSTYPE"
 
 # The three directories the overlay is made of, as the kernel reports them
 # rather than as the unit file asks for them.
-dev_capture 'findmnt -no OPTIONS /var'
+dev_capture 'findmnt -rno OPTIONS /var'
 options=$DEV_OUT
 for pair in \
 	"lowerdir=${EXPECT_VAR_LOWERDIR}" \

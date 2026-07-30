@@ -324,7 +324,7 @@ if [ "$(field scratch-fstype)" != tmpfs ]; then
 		"$(printf '%s\n' "$out" | grep -c 'stages gigabytes in RAM')" 0
 fi
 
-if [ "$(findmnt -no FSTYPE --target /dev/shm 2>/dev/null)" = tmpfs ]; then
+if [ "$(findmnt -rno FSTYPE --target /dev/shm 2>/dev/null)" = tmpfs ]; then
 	build BRENN_BUILD_CONTAINER=never "BRENN_SCRATCH_DIR=${shm_scratch}"
 	t_eq "a RAM-backed scratch dir is recognised as one" \
 		"$(field scratch-fstype)" tmpfs
