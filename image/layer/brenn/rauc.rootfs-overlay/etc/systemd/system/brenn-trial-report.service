@@ -1,0 +1,20 @@
+[Unit]
+Description=Report what the last trial boot's initramfs left behind
+
+# The record is on the selector partition, found by its GPT label, so this waits
+# for the boot to be far enough along that the label symlinks resolve. The local
+# filesystems are mounted by label too, so their target is that point.
+After=local-fs.target
+
+# It reads and does not write, on every boot rather than only after a fallback:
+# on a trial boot the line confirms the writer ran, and on the ordinary boot
+# after a failed one it is the whole of what that boot said. Clearing the record
+# belongs to the next staging, which is a write on a system that has already
+# proved itself.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/brenn/brenn-trial-report
+
+[Install]
+WantedBy=multi-user.target

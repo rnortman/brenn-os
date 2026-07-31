@@ -1,6 +1,7 @@
 #!/bin/sh
 #
-# Refuse an operating-system update while a configuration change is on trial.
+# Refuse an operating-system update while something else is unresolved: a
+# configuration change on trial, or this boot's own slot pair.
 #
 # RAUC runs this before it writes anything, and aborts the installation if it
 # fails. That is the other half of one transaction at a time: a configuration
@@ -25,9 +26,47 @@ set -eu
 prov_root=${BRENN_PROVISIONING_ROOT:-/data/provisioning}
 trial="${prov_root}/trial"
 installing=${BRENN_RAUC_INSTALLING:-/run/brenn/rauc-installing}
+state_dir=${BRENN_TRYBOOT_STATE_DIR:-/data/rauc}
+backend=${BRENN_TRYBOOT_BACKEND:-/usr/lib/rauc/rpi-tryboot-backend}
 
 if [ -L "$trial" ] || [ -e "$trial" ]; then
 	echo "a configuration change is on trial; let it commit or revert before updating" >&2
+	exit 1
+fi
+
+# The same rule between two operating-system transactions, which turns on which
+# pair is running rather than on whether any trial is owed. RAUC writes the pair
+# this system is not running, so on a trial boot — or on a boot whose own pair
+# has been refused — the pair not running is the only one still trusted, and it
+# is the pair an install would mark bad and overwrite.
+#
+# Fail closed on not being able to tell which pair is running: RAUC needs the
+# same answer to choose its target, so an install here could not be safe anyway.
+if ! booted=$("$backend" get-current) || [ -z "$booted" ]; then
+	echo "the running slot could not be determined; refusing to update" >&2
+	exit 1
+fi
+
+# A trial of the running pair that nothing has answered. The refusal names the
+# reboot as well as the verbs, because mark-bad leaves the refused pair running
+# and an install from there is this gate's whole reason for existing — which the
+# check below then refuses on its own account.
+if [ -e "${state_dir}/staged-${booted}" ]; then
+	echo "this boot is an unanswered operating-system trial; commit it (rauc status mark-good) or refuse it (rauc status mark-bad) and reboot before updating" >&2
+	exit 1
+fi
+
+# And a pair that has been refused and not yet rebooted away from, asked as the
+# question the backend publishes rather than read off the marker it writes: how a
+# refusal is recorded is the backend's to change. Fail closed here too — a backend
+# that cannot answer must not read as "not refused".
+if ! state=$("$backend" get-state "$booted") || [ -z "$state" ]; then
+	echo "the running pair's state could not be determined; refusing to update" >&2
+	exit 1
+fi
+
+if [ "$state" = bad ]; then
+	echo "this boot's operating-system pair has been refused; reboot to the committed pair before updating" >&2
 	exit 1
 fi
 

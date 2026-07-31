@@ -61,12 +61,18 @@ green local build is evidence about the local lane only, and the posture the
 rest of the repo is built on — the local gate is the authority, CI is the
 backstop — still does not hold for the image.
 
-Deferred because what remains is a cross-lane comparison in CI, at manifest
-level first and hardening to full-image equality once the two lanes are observed
-to agree, rather than a change to the build. That comparison is now built — the
-`image-container` and `image-identity` jobs, over what
-`scripts/image-manifest.sh` records — and what it reports on its first runs is
-the measurement this entry is waiting on.
+The first half of that comparison has now been taken. The `image-identity` job
+ran for the first time and is green: the container lane and the native arm64
+lane produce the same manifest — the partition table, the image description's
+identity fields, and the package set, as `scripts/image-manifest.sh` records
+them. Two things that measurement does not say. It compares manifests rather
+than images, so anything the manifest does not cover can still differ; and both
+lanes are CI's, so what is shown is that the container lane agrees with the
+native one, not yet that a developer's workstation does.
+
+Deferred because what remains is hardening the comparison to full-image
+equality now that the two lanes are observed to agree, rather than a change to
+the build.
 
 Done when `make image` runs on a developer workstation that is not an arm64
 Debian host and produces the same image CI does.
@@ -80,9 +86,18 @@ the container lane pins its base by digest, its packages by snapshot timestamp,
 and its SBOM scanner by version and digest, and the same build run through it
 would close the gap for CI too.
 
-Deferred because moving the release-shaped lane onto the container is only worth
-doing once the container lane has a record of producing the same image the
-native one does, which is what the `image-identity` job is there to establish.
+The container lane's host side is half closed: the OCI runtime it executes
+through is pinned by version and sha256 after the runner's unpinned podman/crun
+pairing drifted into a combination that refused to create a container at all,
+and podman itself — installed from the runner's archive, which is where a pin
+means either a third-party repository or a build from source — is the remainder.
+
+That precondition has now been met: the `image-identity` job is green on its
+first run, so the container lane has a record of producing what the native one
+does at manifest level. What remains is a decision rather than a discovery —
+whether to pin podman (third-party repository or a build from source) before or
+after moving the release-shaped build onto the container, which would make the
+question moot for the lane that matters.
 
 Done when no CI job invokes `install_deps.sh` and the native image build runs in
 the pinned container.
@@ -152,22 +167,6 @@ review before either the device or the document is adjusted.
 Done when the install has been performed, the three items above are readings
 rather than expectations, the observations are folded back into
 `docs/install.md`, and its status note is gone.
-
-## `iproute2-closure`
-
-`tests/image/expected-reachy.packages` is exhaustive and every other line in it
-was read out of a real build. The six libraries added alongside `iproute2` —
-`libbpf1`, `libelf1t64`, `libmnl0`, `libtirpc-common`, `libtirpc3t64`,
-`libxtables12` — were taken from the package's declared dependencies instead,
-because the tools were added to the image between builds.
-
-Deferred rather than resolved because only a build resolves it, and the
-`140-package-set` assertion is exhaustive in both directions: a predicted line
-that is wrong fails that test with the difference named, which is the review this
-entry is asking for.
-
-Done when a build has confirmed the set and the note above the group in the
-manifest is gone.
 
 ## `boot-write-census`
 

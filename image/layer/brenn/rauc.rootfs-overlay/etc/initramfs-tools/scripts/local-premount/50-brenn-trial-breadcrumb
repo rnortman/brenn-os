@@ -1,0 +1,113 @@
+#!/bin/sh
+#
+# Leave a record that a trial boot's initramfs ran, before anything can reboot.
+#
+# This hardware has no serial header, no display and no persistent journal, so a
+# candidate pair that dies before the network is up leaves nothing at all behind:
+# the firmware falls back to the committed pair and the only evidence is a staged
+# trial that was never answered. That is the same evidence a trial nobody ever
+# started leaves.
+#
+# One bit separates those two, and this writes it. A file on the selector
+# partition says the initramfs of a trial boot ran and what it found where the
+# root filesystem should be. Its absence after a fallback says the boot died
+# before that — firmware, kernel or the initramfs's own start — which is a
+# different investigation.
+#
+# The bit only means that because the writer's presence in the shipped initramfs
+# is asserted by the image suite. An absent breadcrumb from an initramfs that
+# never carried the writer says nothing about the boot.
+#
+# Three rules keep a diagnostic from becoming the failure it was meant to
+# explain:
+#
+#   - Nothing is written on an ordinary boot. That is the whole posture of the
+#     device, and it is also what keeps the selector partition from being
+#     written on boots nobody is questioning.
+#   - The record is written, not appended. The firmware consumes the one-shot
+#     flag before it hands over, so a staging buys exactly one trial boot, and a
+#     file that is rewritten rather than grown cannot fill the partition the
+#     firmware reads to find a bootable system.
+#   - Every failure here is survivable. A selector that will not mount, a
+#     missing device, a full filesystem — each ends this script and the boot
+#     carries on. A boot that fails because its instrumentation failed would be
+#     worse than one nobody can explain.
+#
+# It runs at local-premount rather than earlier because the selector is found by
+# its GPT label, and those symlinks do not exist until udev has run. That also
+# puts it immediately before the A/B root check, which reboots the machine when
+# the active slot's link is missing — so what this records is the last thing
+# known before that decision.
+
+case ${1:-} in
+	prereqs)
+		echo ""
+		exit 0
+		;;
+esac
+
+slot_dir=${BRENN_TRYBOOT_SLOT_DIR:-/dev/disk/by-partlabel}
+dt_dir=${BRENN_TRYBOOT_DT_DIR:-/proc/device-tree/chosen/bootloader}
+tryboot_check=${BRENN_TRYBOOT_CHECK:-/usr/lib/brenn/brenn-tryboot-check}
+root_link=${BRENN_TRYBOOT_ROOT_LINK:-/dev/disk/by-slot/active/system}
+selector_label=${BRENN_TRYBOOT_SELECTOR_LABEL:-bootconfig}
+breadcrumb_override=${BRENN_TRYBOOT_BREADCRUMB:-}
+breadcrumb_name=brenn-trial.log
+mount_point=${BRENN_TRYBOOT_MOUNT_POINT:-/run/brenn-breadcrumb}
+
+# The same reader the units on the running system are gated on, carried into the
+# initramfs by this script's hook. A second copy of the question "was this a
+# trial boot?" is how the two come to disagree.
+"$tryboot_check" || exit 0
+
+partition=$(od -An -tu4 --endian=big -N4 "${dt_dir}/partition" 2>/dev/null |
+	tr -d '[:space:]')
+[ -n "$partition" ] || partition="unreported"
+
+# What the root filesystem resolves to, read before the check that reboots on
+# it. A link that is absent here is the failure that check exists for, and it is
+# the one reading that would otherwise be lost with the boot.
+if [ -e "$root_link" ]; then
+	# Fully resolved where readlink can, the immediate target where it cannot:
+	# this runs against the initramfs's readlink rather than the rootfs's, and a
+	# variant without -f would otherwise turn the most useful line of the record
+	# into the word "unresolvable".
+	target=$(readlink -f "$root_link" 2>/dev/null) ||
+		target=$(readlink "$root_link" 2>/dev/null) ||
+		target=""
+	found="${root_link} -> ${target:-unresolvable}"
+else
+	found="${root_link} absent"
+fi
+
+breadcrumb=""
+opened=""
+
+if [ -n "$breadcrumb_override" ]; then
+	breadcrumb=$breadcrumb_override
+else
+	# Mounted through the label symlink rather than through what it resolves
+	# to: the kernel follows it, and the resolution this script does not do is
+	# one that cannot be wrong.
+	selector="${slot_dir}/${selector_label}"
+	[ -b "$selector" ] || exit 0
+	mkdir -p "$mount_point" 2>/dev/null || exit 0
+	mount -t vfat -o rw "$selector" "$mount_point" 2>/dev/null || exit 0
+	opened=yes
+	breadcrumb="${mount_point}/${breadcrumb_name}"
+fi
+
+{
+	printf 'trial boot: initramfs reached local-premount\n'
+	printf 'trial boot: firmware booted partition %s\n' "$partition"
+	printf 'trial boot: %s\n' "$found"
+} >"$breadcrumb" 2>/dev/null || :
+
+sync "$breadcrumb" 2>/dev/null || sync 2>/dev/null || :
+
+if [ -n "$opened" ]; then
+	umount "$mount_point" 2>/dev/null || :
+	rmdir "$mount_point" 2>/dev/null || :
+fi
+
+exit 0

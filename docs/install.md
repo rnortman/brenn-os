@@ -18,8 +18,8 @@ write, provision, verify — are the same on any profile.
 First install and disaster recovery, and nothing else. Reaching for this
 document to change something on a device that already runs this image is a sign
 of taking the wrong path: an OS change is `make bundle` and an install onto the
-idle slot pair, and a configuration change is `brenn-config-apply`. Both leave
-the robot assembled.
+idle slot pair (`docs/update.md`), and a configuration change is
+`brenn-config-apply` (`docs/provisioning.md`). Both leave the robot assembled.
 
 Entering flashing mode costs a teardown, and the recovery route it provides is
 the only one this hardware has, so it is used sparingly and deliberately.

@@ -15,6 +15,9 @@
 
 # shellcheck shell=bash
 
+# shellcheck source=scripts/lib/overlay-conf.sh
+. "${BRENN_REPO_ROOT}/scripts/lib/overlay-conf.sh"
+
 # What the profile is expected to be, in two halves. The image half is the same
 # file the image suite reads, because a device assertion and an image assertion
 # about the same property must not be able to disagree; the device half is the
@@ -38,22 +41,18 @@ dev_load_expectations() {
 # knob in this project takes, and it holds a host name — site information, and
 # the reason the file is gitignored rather than tracked with placeholders.
 dev_load_target() {
-	local conf env_host env_user env_opts
+	local conf
 	conf=${BRENN_DEVICE_CONF:-${BRENN_REPO_ROOT}/.local/device.conf}
-	env_host=${BRENN_DEVICE_HOST:-}
-	env_user=${BRENN_DEVICE_USER:-}
-	env_opts=${BRENN_DEVICE_SSH_OPTS:-}
+	overlay_load_conf "$conf" \
+		BRENN_DEVICE_HOST= \
+		BRENN_DEVICE_USER=root \
+		BRENN_DEVICE_SSH_OPTS=
 
-	if [ -f "$conf" ]; then
-		# shellcheck disable=SC1090  # a local overlay, absent from the tree
-		. "$conf"
-	fi
-
-	DEV_HOST=${env_host:-${BRENN_DEVICE_HOST:-}}
+	DEV_HOST=$BRENN_DEVICE_HOST
 	if [ -z "$DEV_HOST" ]; then
 		t_skip "no device configured — set BRENN_DEVICE_HOST or write ${conf} (see README)"
 	fi
-	DEV_USER=${env_user:-${BRENN_DEVICE_USER:-root}}
+	DEV_USER=$BRENN_DEVICE_USER
 	DEV_SSH=${BRENN_DEVICE_SSH:-ssh}
 	DEV_CONNECT_TIMEOUT=${BRENN_DEVICE_CONNECT_TIMEOUT:-10}
 
@@ -105,7 +104,7 @@ dev_load_target() {
 		fi
 	fi
 
-	local opts=${env_opts:-${BRENN_DEVICE_SSH_OPTS:-}}
+	local opts=$BRENN_DEVICE_SSH_OPTS
 	DEV_SSH_OPTS=()
 	if [ -n "$opts" ]; then
 		# Split deliberately: the overlay writes ssh options the way ssh takes

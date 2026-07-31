@@ -43,6 +43,12 @@ installing=${BRENN_RAUC_INSTALLING:-/run/brenn/rauc-installing}
 autoboot_override=${BRENN_TRYBOOT_AUTOBOOT:-}
 selector_label=${BRENN_TRYBOOT_SELECTOR_LABEL:-bootconfig}
 
+# The file a trial boot's initramfs writes beside the selector file, naming how
+# far that boot got. Staging is the only verb that holds this partition writable
+# on a boot that has already proved itself, so it is where a record belonging to
+# the previous trial is cleared.
+breadcrumb_name=brenn-trial.log
+
 # The argument systemd passes to the firmware on the next reboot. The "0" is
 # the partition ("default"); the flag is what makes it a trial.
 tryboot_param='0 tryboot'
@@ -192,6 +198,12 @@ write_autoboot() {
 # argument, which is how the flag gets armed without a mailbox call. It lives
 # in RAM: a power cut between staging and the reboot loses the arming and the
 # device comes up on the committed pair, which is the safe direction.
+#
+# It is also fragile in a way nothing here can prevent: the reboot, halt and
+# poweroff compat verbs delete this file while parsing their own arguments, so
+# an operator who types one of them takes an ordinary reboot instead of the
+# trial. The staged marker is the durable half of the arming, and
+# brenn-trial-rearm writes this file again during shutdown while one exists.
 arm_tryboot() {
 	mkdir -p "$(dirname "$reboot_param")"
 	printf '%s\n' "$tryboot_param" >"$reboot_param"
@@ -216,13 +228,29 @@ state_marker() {
 	printf '%s/bad-%s' "$state_dir" "$1"
 }
 
+# The other thing the writable partition has to remember across the trial
+# reboot: that a pair is staged and its trial is still unanswered. RAUC marks a
+# slot bad before it writes to it and never marks it good again, so without this
+# marker a freshly installed pair is indistinguishable from a rejected one. This
+# says only "staged, unresolved", and the two verbs that answer the trial
+# remove it.
+staged_marker() {
+	printf '%s/staged-%s' "$state_dir" "$1"
+}
+
 # --- verbs ------------------------------------------------------------------
 
 case "${1:-}" in
 	get-primary)
 		[ $# -eq 1 ] || die "usage: ${self} get-primary"
 		open_autoboot ro
-		bootname_of_partition "$(committed_partition)"
+		# Read into a variable rather than substituted into the call: a
+		# substitution that dies there takes only its own subshell with it,
+		# and the empty string it leaves behind surfaces as a partition
+		# lookup that found nothing instead of as the selector file naming
+		# no committed pair, which is what actually happened.
+		tb_primary=$(committed_partition)
+		bootname_of_partition "$tb_primary"
 		;;
 
 	set-primary)
@@ -234,8 +262,31 @@ case "${1:-}" in
 			note "slot ${2} is already the committed one; staging it anyway"
 		fi
 		write_autoboot "$tb_primary" "$tb_candidate"
+		# The previous trial's breadcrumb belongs to the pair being replaced.
+		# Left here it would be read after the next fallback as evidence about
+		# a boot that never happened.
+		rm -f "${autoboot_path%/*}/${breadcrumb_name}"
 		close_autoboot
 		arm_tryboot
+		mkdir -p "$state_dir"
+		# Staging a slot withdraws any earlier refusal of it: the bytes that
+		# were refused have just been replaced. RAUC marks its target bad
+		# before writing and never marks it good, so a slot left carrying that
+		# marker reports bad from the start of an install until its trial
+		# commits — a freshly installed pair wearing the costume of a rejected
+		# one. An install that dies before staging keeps the marker, which is
+		# the case it is actually there for.
+		rm -f "$(state_marker "$2")"
+		# At most one trial can be owed: the selector file has exactly one
+		# [tryboot] section, so this staging replaces whatever the last one
+		# asked for. An install taken during a trial boot targets the other
+		# pair, and a marker left behind for the pair being replaced is
+		# answered by nothing afterwards — a commit removes only the running
+		# slot's — leaving the shutdown re-arm to make every later reboot a
+		# trial nobody asked for.
+		rm -f "${state_dir}"/staged-*
+		: >"$(staged_marker "$2")"
+		sync "$state_dir" 2>/dev/null || sync || true
 		# Staging is the end of the install, and the armed flag is from here
 		# on what says an update is in flight. The record the pre-install
 		# check wrote has done its job and would otherwise refuse every
@@ -279,24 +330,72 @@ case "${1:-}" in
 					exit 0
 				fi
 				open_autoboot rw
-				if [ "$(committed_partition)" != "$tb_slot" ]; then
+				# A selector naming no committed pair is not fatal here: the
+				# write below is its repair — a well-formed file naming the
+				# pair that has just proved itself, on a boot that already
+				# succeeded. Aborting instead would leave the unreadable file
+				# in place with the trial unanswered, and the deadman would
+				# reboot ten minutes later into whatever the firmware makes
+				# of it.
+				if ! tb_committed=$(committed_partition); then
+					tb_committed=""
+					note "the selector named no committed pair; rewriting it"
+				fi
+				if [ "$tb_committed" != "$tb_slot" ]; then
 					write_autoboot "$tb_slot" "$tb_other"
 					note "committed slot ${2}"
 				fi
 				close_autoboot
+				# The trial is answered here and nowhere else on this path:
+				# the pair that was staged is the pair that just proved
+				# itself. Withdrawing a refusal of a pair that is not
+				# running answers nothing, so it leaves the staging record
+				# where it is.
+				#
+				# Removed after the selector write. A commit that dies on
+				# the way to that write has answered nothing, and this marker
+				# is what the pre-install gate reads to refuse an install
+				# onto the pair that is then still the only proven one.
+				rm -f "$(staged_marker "$2")"
+				sync "$state_dir" 2>/dev/null || sync || true
 				disarm_tryboot
 				;;
 			bad)
 				mkdir -p "$state_dir"
 				: >"$(state_marker "$2")"
+				# A refusal supersedes a staging, whichever pair is running:
+				# the question a staged trial asks has been answered no.
+				rm -f "$(staged_marker "$2")"
 				sync "$state_dir" 2>/dev/null || sync || true
+				# Before the selector is opened, not after it is closed. The
+				# armed flag is the one thing that would boot the refused pair
+				# again — on the refuse-before-reboot path that pair is the
+				# staged one — and it depends on nothing the selector work
+				# produces, so a refusal sheds it even when it aborts below.
+				disarm_tryboot
 				open_autoboot rw
-				if [ "$(committed_partition)" = "$tb_slot" ]; then
+				# Read before the comparison, not inside it. A substitution
+				# that dies inside an `if` condition is not fatal, and its
+				# empty output reads as "some other pair is committed" — so
+				# refusing the committed pair would report success and leave
+				# the boot default naming the pair just refused. The refusal
+				# marker above is already written and synced, so aborting
+				# here still records the refusal; the nonzero exit is what
+				# says the default did not move.
+				tb_committed=$(committed_partition)
+				# A committed value naming neither pair is the same
+				# corruption one digit over, and read as it stands it
+				# compares as "the other pair is committed" — the same
+				# success that moves nothing. Which pair the firmware
+				# would boot from such a file is established nowhere, so
+				# the refusal stops here rather than vouching for it.
+				[ "$tb_committed" = "$tb_slot" ] || [ "$tb_committed" = "$tb_other" ] ||
+					die "committed boot_partition ${tb_committed} belongs to no slot"
+				if [ "$tb_committed" = "$tb_slot" ]; then
 					write_autoboot "$tb_other" "$tb_slot"
 					note "slot ${2} refused; the other slot is now the committed one"
 				fi
 				close_autoboot
-				disarm_tryboot
 				;;
 			*)
 				die "unknown state '${3}'"

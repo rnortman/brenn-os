@@ -63,8 +63,14 @@ new_output_dir() {
 
 # What the tool says is asserted through its refusals, so its complaint is kept
 # and its ordinary output is not.
+#
+# The knobs are cleared and the local overlay is pointed at a path that does not
+# exist, so a build host with signing material configured — which is every host
+# that has ever cut a release — asserts the same thing a bare clone does.
 run_bundle() {
-	"$make_bundle" "$@" >/dev/null 2>"${work}/err"
+	t_env_scrubbed BRENN_BUNDLE_ \
+		BRENN_BUNDLE_CONF="${work}/no-such.conf" \
+		"$make_bundle" "$@" >/dev/null 2>"${work}/err"
 	rc=$?
 	err=$(cat "${work}/err")
 	return 0
@@ -118,7 +124,7 @@ t_eq "an explicit version is taken" \
 dir=$(new_output_dir unversioned 2026.07.26-3)
 rm -f "${dir}/image.json"
 run_bundle --stage-only "$dir"
-t_eq "a build that stamped no version is refused" "$([ "$rc" -ne 0 ] && echo yes)" yes
+t_fails "a build that stamped no version is refused" "$rc" "$err"
 t_eq "and says what is missing" \
 	"$(printf '%s' "$err" | grep -c 'no version in')" 1
 t_eq "and stages nothing" "$([ -e "${dir}/bundle-stage" ] || echo none)" none
@@ -126,16 +132,46 @@ t_eq "and stages nothing" "$([ -e "${dir}/bundle-stage" ] || echo none)" none
 dir=$(new_output_dir noimages 2026.07.26-4)
 rm -f "${dir}/system.ext4" "${dir}/system.sparse"
 run_bundle --stage-only "$dir"
-t_eq "a build with no root filesystem image is refused" "$([ "$rc" -ne 0 ] && echo yes)" yes
+t_fails "a build with no root filesystem image is refused" "$rc" "$err"
 t_eq "and names the class that is missing" \
 	"$(printf '%s' "$err" | grep -c 'no rootfs image')" 1
 t_eq "and stages nothing" "$([ -e "${dir}/bundle-stage" ] || echo none)" none
 
 run_bundle --stage-only "${work}/never-built"
-t_eq "a directory that does not exist is refused" "$([ "$rc" -ne 0 ] && echo yes)" yes
+t_fails "a directory that does not exist is refused" "$rc" "$err"
 
 run_bundle --stage-only --profile no-such-profile
-t_eq "a profile that does not exist is refused" "$([ "$rc" -ne 0 ] && echo yes)" yes
+t_fails "a profile that does not exist is refused" "$rc" "$err"
+
+# The profile also arrives from the environment, under the prefixed name every
+# other knob in this repository uses. Nothing else exercises that path — the
+# Makefile passes --profile explicitly — so a revert to the bare spelling would
+# otherwise pass the whole suite.
+run_bundle_env() {
+	local assignment=$1
+	shift
+	t_env_scrubbed BRENN_BUNDLE_ \
+		BRENN_BUNDLE_CONF="${work}/no-such.conf" \
+		env -u BRENN_PROFILE "$assignment" \
+		"$make_bundle" "$@" >/dev/null 2>"${work}/err"
+	rc=$?
+	err=$(cat "${work}/err")
+	return 0
+}
+
+run_bundle_env BRENN_PROFILE=no-such-profile --stage-only
+t_fails "the profile is read from BRENN_PROFILE" "$rc" "$err"
+t_eq "and the refusal names the profile that came from there" \
+	"$(printf '%s' "$err" | grep -c 'no such profile: no-such-profile')" 1
+
+# The unprefixed name is a make variable and nothing else. Left readable from
+# the environment it would collide with everything else on a shell that exports
+# a PROFILE of its own.
+run_bundle_env PROFILE=no-such-profile --stage-only
+t_eq "a bare PROFILE in the environment is not read" \
+	"$(printf '%s' "$err" | grep -c 'no such profile')" 0
+t_eq "so the tool asks for the directory it was given neither of" \
+	"$(printf '%s' "$err" | grep -c 'no output directory given and no profile set')" 1
 
 # The profile is what turns `make bundle` into a path. Asserted against a build
 # root of our own, so the mapping from a profile name to the directory that
@@ -182,8 +218,7 @@ else
 	dir=$(new_output_dir noconverter 2026.07.26-8)
 	rm -f "${dir}/system.ext4"
 	run_bundle --stage-only "$dir"
-	t_eq "the same build with no converter installed is refused" \
-		"$([ "$rc" -ne 0 ] && echo yes)" yes
+	t_fails "the same build with no converter installed is refused" "$rc" "$err"
 	t_eq "and names the tool it needs" \
 		"$(printf '%s' "$err" | grep -c 'simg2img')" 1
 fi

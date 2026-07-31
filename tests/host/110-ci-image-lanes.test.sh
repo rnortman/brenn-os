@@ -74,11 +74,49 @@ t_eq "the host's qemu is installed for the container to borrow" \
 t_eq "and the flag that makes it usable from a container is asserted" \
 	"$(printf '%s\n' "$container" | grep -c "flags:.*F")" 1
 
-# mtools is how the image suite reads the vfat partitions, and is not on the
-# runner. Without it those assertions skip, and a suite that skips some of its
-# tests still passes — which is the failure mode this lane exists to avoid.
+# mtools is how the image suite reads the vfat partitions and cpio is how it
+# unpacks the built initramfs; neither is on the runner. Without them those
+# assertions skip, and a suite that skips some of its tests still passes — which
+# is the failure mode this lane exists to avoid.
 t_eq "the tools the image suite reads with are installed on this lane too" \
-	"$(printf '%s\n' "$container" | grep -c 'apt-get install .*mtools')" 1
+	"$(printf '%s\n' "$container" | grep -c 'apt-get install .*mtools cpio')" 1
+
+# The same reader, on the lane whose build is the release-shaped one. Its host
+# dependencies come from the builder's own installer, which is free to stop
+# serving any of them; what the suite needs is asked for by name.
+t_eq "and on the native lane, whose other dependencies are not ours to pin" \
+	"$(printf '%s\n' "$native" | grep -c 'apt-get install .*cpio')" 1
+
+# Unpinned, the runtime is whatever pairing the runner image carries on the
+# day — a podman writing OCI spec v1.2 against a crun too old to parse it
+# refuses to create a container at all, which is how this lane went red without
+# a line of the tree changing.
+crun_version=$(printf '%s\n' "$container" |
+	sed -n 's/^      CRUN_VERSION: //p' | head -n1 | tr -d '"')
+crun_sha=$(printf '%s\n' "$container" | sed -n 's/^      CRUN_SHA256: //p' | head -n1)
+t_eq "the container lane pins the runtime it executes through" \
+	"$([ -n "$crun_version" ] && echo yes)" yes
+t_eq "and pins the download by digest, since a release asset can be replaced" \
+	"$(printf '%s' "$crun_sha" | grep -c '^[0-9a-f]\{64\}$')" 1
+t_eq "installing it at the path the pin names" \
+	"$(printf '%s\n' "$container" | grep -cF 'install -m 0755 crun /usr/local/bin/crun')" 1
+t_eq "and naming that path to podman rather than leaving it to PATH" \
+	"$(printf '%s\n' "$container" | grep -cF 'crun = ["/usr/local/bin/crun"]')" 1
+
+# A pin nothing checks is a pin that silently stops applying: podman resolving
+# the distro runtime again would build exactly as well, right up until the day
+# it does not.
+#
+# The needles are the workflow's shell text, matched literally: the variables
+# in them belong to the job's own script, not to this one.
+# shellcheck disable=SC2016
+path_assert='test "$resolved" = /usr/local/bin/crun'
+# shellcheck disable=SC2016
+version_assert='test "$version" = "$CRUN_VERSION"'
+t_eq "and asserting in-job that podman resolved the pinned runtime" \
+	"$(printf '%s\n' "$container" | grep -cF "$path_assert")" 1
+t_eq "at the pinned version" \
+	"$(printf '%s\n' "$container" | grep -cF "$version_assert")" 1
 
 # Every binary in the target root filesystem runs under emulation on this lane,
 # so the build is slow by nature. A timeout sized for the native lane would kill

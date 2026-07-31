@@ -285,7 +285,8 @@ t_eq "what would be removed is everything in it, dotfiles included — never the
 
 mkdir -p "${tmp}/fakeroot/scripts/lib"
 cp -- "${BRENN_REPO_ROOT}/scripts/clean-work.sh" "${tmp}/fakeroot/scripts/"
-cp -- "${BRENN_REPO_ROOT}/scripts/lib/build-lane.sh" "${tmp}/fakeroot/scripts/lib/"
+cp -- "${BRENN_REPO_ROOT}/scripts/lib/build-lane.sh" \
+	"${BRENN_REPO_ROOT}/scripts/lib/overlay-conf.sh" "${tmp}/fakeroot/scripts/lib/"
 fake_script="${tmp}/fakeroot/scripts/clean-work.sh"
 fake_root=$(cd -P -- "${tmp}/fakeroot" && pwd -P)
 

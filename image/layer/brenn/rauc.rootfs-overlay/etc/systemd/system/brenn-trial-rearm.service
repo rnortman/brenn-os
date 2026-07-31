@@ -1,0 +1,25 @@
+[Unit]
+Description=Re-arm a staged trial for the next reboot
+Documentation=man:systemd-shutdown(8)
+
+# Nothing in the boot depends on this unit, and nothing it does happens while
+# the system runs: it exists to be stopped. Its stop command re-writes the
+# reboot parameter that the reboot, halt and poweroff verbs delete while
+# parsing their arguments, so a staged update is tried whichever verb the
+# operator types. The ordinary shutdown ordering puts that stop before
+# systemd-shutdown reads the file.
+#
+# The record it reads is on the persistent partition, so the mount is required
+# by path: being ordered after it starting is also being ordered before it goes
+# away, and a stop command that ran after the unmount would read nothing and
+# quietly arm nothing.
+RequiresMountsFor=/persistent
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/lib/brenn/brenn-trial-rearm
+
+[Install]
+WantedBy=multi-user.target

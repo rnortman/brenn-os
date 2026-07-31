@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# What the trial breadcrumb writer needs, put inside the initramfs.
+#
+# initramfs-tools copies the boot scripts by itself; everything a boot script
+# calls has to be asked for. The A/B slot layer's hook already brings `od` and
+# its own helpers, but a diagnostic that is only present because another layer
+# happened to want the same tools is one a submodule bump can silently remove —
+# and an absent breadcrumb then reads as evidence about the boot instead of
+# evidence about the build. So this asks for its own.
+#
+# The tryboot reader is copied rather than reimplemented: the initramfs and the
+# units on the running system have to answer "was this a trial boot?" the same
+# way, and two readers of one device tree value is how they stop doing that.
+#
+# `tr` and `rmdir` are not part of the klibc utilities an initramfs is built
+# from, and `tr` is the one that would fail quietly: the tryboot reader strips
+# whitespace from the value it reads, so without it every boot reads as an
+# ordinary one and the record is never written on the boot it exists for.
+#
+# vfat is asked for because the selector partition is FAT and the record is
+# written there. On a kernel that builds it in, dracut-install's optional mode
+# finds nothing to copy and says nothing — which is correct, and is why the
+# image suite asserts the support is present rather than asserting the module
+# file is.
+
+case ${1:-} in
+	prereqs)
+		echo ""
+		exit 0
+		;;
+esac
+
+# The helper library exists on the build host running update-initramfs, not in
+# this tree, so there is nothing here for the linter to follow.
+# shellcheck source=/dev/null
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /usr/lib/brenn/brenn-tryboot-check
+copy_exec /usr/bin/od
+copy_exec /usr/bin/tr
+copy_exec /usr/bin/rmdir
+
+manual_add_modules vfat

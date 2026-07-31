@@ -78,7 +78,8 @@ the built image and against temporary trees, not against a device.
   for one boot and reverted automatically if the device does not come back.
 - **Updates.** A signed bundle onto the inactive slot pair, one trial boot,
   commit or roll back. The mechanism ships in the image, and `make bundle` packs
-  a build into the bundle it installs.
+  a build into the bundle it installs. Building, installing and verifying one is
+  `docs/update.md`.
 - **Applications.** The payload is fetched over HTTPS into a memory-backed
   filesystem at boot, verified, and exec'd unprivileged, with a live resync and
   a development push loop that never touch flash (`docs/app-contract.md`).

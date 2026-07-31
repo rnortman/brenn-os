@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# Say what the last trial boot's initramfs left behind.
+#
+# The breadcrumb is written on the selector partition by a boot that may not
+# have survived long enough to say anything else. Reading it needs a system that
+# came up — which, after a fallback, is the committed pair on the next ordinary
+# boot. So the record is written by one boot and reported by the next.
+#
+# Reporting means the journal, and nothing more: the journal is volatile here
+# and goes off-device through the log collector the unit's generation names, so
+# the way a breadcrumb reaches somebody who can read it is the same way every
+# other line does.
+#
+# It writes nothing. The selector is mounted read-only, and the record is
+# cleared by the next staging — which is a verb that already holds that
+# partition writable on a boot that has already proved itself. An ordinary boot
+# writes no flash, and that includes this.
+#
+# A breadcrumb from a trial that committed is reported too, once, and then
+# cleared by the next install. The line is not an alarm; it is what the boot
+# found, and "the initramfs ran and resolved the root slot" is the reading that
+# says a fallback happened later rather than earlier.
+
+set -eu
+
+self=${0##*/}
+
+slot_dir=${BRENN_TRYBOOT_SLOT_DIR:-/dev/disk/by-partlabel}
+selector_label=${BRENN_TRYBOOT_SELECTOR_LABEL:-bootconfig}
+breadcrumb_override=${BRENN_TRYBOOT_BREADCRUMB:-}
+breadcrumb_name=brenn-trial.log
+
+mount_point=""
+
+close_selector() {
+	[ -n "$mount_point" ] || return 0
+	umount "$mount_point" 2>/dev/null || echo "${self}: cannot unmount ${mount_point}" >&2
+	rmdir "$mount_point" 2>/dev/null || :
+	mount_point=""
+}
+
+trap close_selector EXIT INT TERM
+
+if [ -n "$breadcrumb_override" ]; then
+	breadcrumb=$breadcrumb_override
+else
+	selector=$(readlink -f "${slot_dir}/${selector_label}") || {
+		echo "${self}: no partition labelled ${selector_label}" >&2
+		exit 0
+	}
+	mount_point=$(mktemp -d) || exit 0
+	if ! mount -t vfat -o ro,noatime "$selector" "$mount_point"; then
+		rmdir "$mount_point" 2>/dev/null || :
+		mount_point=""
+		echo "${self}: cannot mount ${selector} read-only" >&2
+		exit 0
+	fi
+	breadcrumb="${mount_point}/${breadcrumb_name}"
+fi
+
+if [ ! -f "$breadcrumb" ]; then
+	echo "${self}: no trial breadcrumb; no trial boot has reached the initramfs since the last install" >&2
+	exit 0
+fi
+
+echo "${self}: the last trial boot left this behind:" >&2
+# The last line is reported whether or not it ends in a newline. A record cut
+# off mid-write — a power cut or a reset during the very boot this exists to
+# explain — is exactly the one that ends without one, and it is the line worth
+# the most.
+while IFS= read -r line || [ -n "$line" ]; do
+	echo "${self}: ${line}" >&2
+done <"$breadcrumb"

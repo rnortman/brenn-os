@@ -258,6 +258,92 @@ img_sweep_for_string() {
 	done < <(img_ext4_ls "$IMG_SPEC" "$dir")
 }
 
+# Copy one file out of a vfat partition without going through a shell string.
+# The text reader mangles anything that is not text; this is for the ones that
+# are not.
+img_vfat_copy() {
+	local img=$1 part=$2 path=$3 dest=$4 offset
+	offset=$(img_part_offset_bytes "$part") || return 1
+	MTOOLS_SKIP_CHECK=1 mcopy -n -i "${img}@@${offset}" "::${path}" "$dest" 2>/dev/null
+}
+
+# Unpack an initramfs into an existing directory.
+#
+# The format is a concatenation: zero or more uncompressed cpio archives, then
+# one compressed archive holding the boot scripts and the userspace. cpio
+# consumes exactly one archive and leaves the file offset at the start of the
+# next, which is how the segments are told apart here without a parser for the
+# header format — the same reason the rest of this file shells out to readers
+# rather than decoding filesystems itself.
+#
+# Reports by exit status only, so it can be called from a command substitution.
+img_initramfs_unpack() {
+	local src=$1 dest=$2 work seg skip decoder
+	command -v cpio >/dev/null 2>&1 || return 2
+
+	work=$(mktemp -d) || return 1
+	seg="${work}/segment"
+	cp -- "$src" "$seg" || { rm -rf "$work"; return 1; }
+	mkdir -p -- "$dest" || { rm -rf "$work"; return 1; }
+
+	while [ -s "$seg" ]; do
+		# Segments are padded to a block boundary, and the padding belongs to
+		# neither the archive before it nor the one after.
+		skip=$(head -c 4096 -- "$seg" | od -An -v -tu1 |
+			awk 'BEGIN { n = 0 } { for (i = 1; i <= NF; i++) { if ($i != 0) { print n; exit } n++ } }')
+		if [ -n "$skip" ] && [ "$skip" -gt 0 ]; then
+			if ! tail -c "+$((skip + 1))" -- "$seg" >"${work}/trimmed"; then
+				rm -rf "$work"
+				return 1
+			fi
+			mv -- "${work}/trimmed" "$seg" || { rm -rf "$work"; return 1; }
+		fi
+
+		# A compressed segment's magic carries null bytes, which a command
+		# substitution drops with a warning on stderr; the magic being looked
+		# for has none, so they are dropped here instead and quietly.
+		if [ "$(head -c 6 -- "$seg" | tr -d '\0')" = "070701" ]; then
+			# cpio's own status, written down inside the group: the group's
+			# status is the one `cat` ends with, so a segment that would not
+			# extract otherwise reports as unpacked and the caller reads a
+			# partial tree as the build's doing.
+			(
+				cd "$dest" || exit 1
+				{
+					cpio -idmu --quiet 2>/dev/null
+					printf '%s' "$?" >"${work}/status"
+					cat >"${work}/next"
+				} <"$seg"
+			) || { rm -rf "$work"; return 1; }
+			if [ "$(cat "${work}/status")" != 0 ]; then
+				rm -rf "$work"
+				return 1
+			fi
+			mv -- "${work}/next" "$seg" || { rm -rf "$work"; return 1; }
+			continue
+		fi
+
+		for decoder in "zstd -dc" "gzip -dc" "xz -dc" "lz4 -dc"; do
+			command -v "${decoder%% *}" >/dev/null 2>&1 || continue
+			# shellcheck disable=SC2086  # the decoder is a fixed word list
+			if $decoder <"$seg" >"${work}/plain" 2>/dev/null; then
+				if ! ( cd "$dest" && cpio -idmu --quiet <"${work}/plain" 2>/dev/null ); then
+					rm -rf "$work"
+					return 1
+				fi
+				rm -rf "$work"
+				return 0
+			fi
+		done
+
+		rm -rf "$work"
+		return 1
+	done
+
+	rm -rf "$work"
+	return 0
+}
+
 # Copy a directory tree out of the root filesystem into an existing host
 # directory, which lands as <dest>/<basename of dir>. A whole-subtree question —
 # "is there a key anywhere under /etc" — costs one reader invocation this way

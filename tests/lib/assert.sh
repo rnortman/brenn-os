@@ -1,4 +1,5 @@
-# Assertion helpers for `*.test.sh` scripts. Source, don't execute.
+# Assertion and environment helpers for `*.test.sh` scripts. Source, don't
+# execute.
 #
 # A test script makes any number of assertions and ends with `t_done`. Each
 # assertion prints a line; failures print what was expected next to what was
@@ -129,6 +130,18 @@ t_ok() {
 	fi
 }
 
+# Assert that the command failed (nonzero exit status). The third argument, if
+# given, is what to print when the command succeeded anyway — usually the run's
+# own output.
+t_fails() {
+	local desc=$1 status=$2
+	if [ "$status" -ne 0 ]; then
+		t_pass "$desc"
+	else
+		t_fail "$desc" "${3:-exited 0; expected a refusal}"
+	fi
+}
+
 t_le() {
 	local desc=$1 actual=$2 limit=$3
 	if [ "$actual" -le "$limit" ]; then
@@ -145,6 +158,25 @@ t_ge() {
 	else
 		t_fail "$desc" "floor:  ${floor}" "actual: ${actual}"
 	fi
+}
+
+# Run a command with every variable whose name starts with <prefix> taken out of
+# its environment, followed by whatever `NAME=value` assignments and command the
+# caller passes. env applies the removals before the assignments, so a knob the
+# caller sets deliberately still arrives.
+#
+# What this closes: a maintainer's own configured host must assert exactly what
+# a bare clone does, and a tool's knobs are read from the environment. The list
+# comes from the live environment rather than from a hand-kept copy of the
+# tool's knob set, so a knob added later is covered without an edit here.
+t_env_scrubbed() {
+	local prefix=$1 name
+	local -a scrub=()
+	shift
+	while IFS= read -r name; do
+		scrub+=(-u "$name")
+	done < <(compgen -v "$prefix" || true)
+	env "${scrub[@]}" "$@"
 }
 
 t_done() {

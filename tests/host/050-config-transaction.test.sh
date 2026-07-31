@@ -27,6 +27,8 @@ set -uo pipefail
 . "${BRENN_TESTS_LIB}/assert.sh"
 # shellcheck source=tests/lib/generation.sh
 . "${BRENN_TESTS_LIB}/generation.sh"
+# shellcheck source=tests/lib/tryboot.sh
+. "${BRENN_TESTS_LIB}/tryboot.sh"
 
 overlay="${BRENN_REPO_ROOT}/image/layer/brenn/provisioning.rootfs-overlay/usr/lib/brenn"
 apply="${overlay}/brenn-config-apply"
@@ -35,9 +37,16 @@ deadman="${overlay}/brenn-config-deadman"
 select_bin="${overlay}/brenn-config-select"
 validate="${overlay}/brenn-config-validate"
 installer="${overlay}/brenn-config-install"
-preinstall="${BRENN_REPO_ROOT}/image/layer/brenn/rauc.rootfs-overlay/usr/lib/brenn/brenn-rauc-preinstall"
+# The update side's two programs, named through the overlay root they are
+# installed from: where the gate looks for the backend is one of the two defaults
+# that have to be right on the device, and the only thing that says what the
+# right answer is is where the image puts it.
+rauc_overlay="${BRENN_REPO_ROOT}/image/layer/brenn/rauc.rootfs-overlay"
+preinstall="${rauc_overlay}/usr/lib/brenn/brenn-rauc-preinstall"
+backend="${rauc_overlay}/usr/lib/rauc/rpi-tryboot-backend"
 
-for bin in "$apply" "$commit" "$deadman" "$select_bin" "$validate" "$installer" "$preinstall"; do
+for bin in "$apply" "$commit" "$deadman" "$select_bin" "$validate" "$installer" \
+	"$preinstall" "$backend"; do
 	if [ ! -x "$bin" ]; then
 		t_fail "the transaction's programs are present and executable" "not at ${bin}"
 		t_done
@@ -70,6 +79,14 @@ out=""
 rc=0
 apply_reboot=true
 
+# The update side's half of a device, built only by the cases that need it.
+slots=""
+dt=""
+autoboot=""
+rauc_state=""
+installing=""
+preinstall_backend=""
+
 # A device with one committed generation, freshly provisioned: what every case
 # starts from. The store is built the way scripts/provision.sh leaves it —
 # gen-1 in place, committed, nothing on trial.
@@ -81,6 +98,17 @@ new_device() {
 	flag="${runtime}/config-trial"
 	out="${root}/out"
 	apply_reboot=true
+	# The firmware, the slot markers and the install record live under the same
+	# root and are built by new_update_device, not here. Cleared so a case that
+	# takes the store alone cannot run the pre-install gate against the previous
+	# case's device — a stale install record in particular would let the "on
+	# record" assertions pass having checked nothing.
+	slots=""
+	dt=""
+	autoboot=""
+	rauc_state=""
+	installing=""
+	preinstall_backend=""
 	mkdir -p "${store}" "${runtime}"
 	# Generations name the published path in the collector's trust anchor, and
 	# the contract check derives what it expects from the same place — so the
@@ -277,23 +305,251 @@ t_eq "the candidate stays on trial" "$(candidate_state)" gen-2
 
 # --- one transaction at a time, from the update's side -----------------------
 
-new_device preinstall-refusal
+# The gate asks the boot selector which pair is running, so these cases have to
+# stand in for the firmware as well as for the store. The backend and its
+# fixture are the real ones the trial machinery drives: the markers this gate
+# refuses on are named by the backend, and a second opinion about which slot is
+# which is exactly the disagreement that would let an install through.
+#
+# One helper builds both halves, because they share a root and neither resets the
+# other: split in two, the next case to be written takes the store the way every
+# other case in this file does and silently inherits the last one's firmware,
+# markers and install record.
+new_update_device() {
+	local root="${work}/$1"
+	new_device "$1"
+	rauc_state="${root}/data/rauc"
+	installing="${root}/rauc-installing"
+	mkdir -p "$rauc_state"
+	tryboot_fixture "$root" "${2:-}" "${3:-}"
+	slots=$tryboot_slots
+	dt=$tryboot_dt
+	# The selector file, so the backend's own verbs can be run against this
+	# device: slot A committed, B the candidate, which is what the cases below
+	# stand their firmware report up against.
+	autoboot="${root}/autoboot.txt"
+	tryboot_autoboot_text 2 3 >"$autoboot"
+	preinstall_backend=$backend
+}
+
+# The markers the gate refuses on, put there by the backend that owns them
+# rather than written by name here. The staged one in particular the gate reads
+# straight off the filesystem — no verb answers "is a trial owed" — so a
+# hand-written fixture and a hand-written read agree with each other while both
+# can drift away from the backend that writes the file on the device.
+run_backend_verb() {
+	env BRENN_TRYBOOT_SLOT_DIR="$slots" \
+		BRENN_TRYBOOT_DT_DIR="$dt" \
+		BRENN_TRYBOOT_AUTOBOOT="$autoboot" \
+		BRENN_TRYBOOT_STATE_DIR="$rauc_state" \
+		BRENN_TRYBOOT_REBOOT_PARAM="${autoboot%/*}/reboot-param" \
+		BRENN_RAUC_INSTALLING="${autoboot%/*}/staging-record" \
+		"$backend" "$@"
+}
+
+run_preinstall() {
+	# Every case here is a refusal or an allowance that a missing fixture could
+	# imitate — the gate fails closed, so no firmware reads as a refusal.
+	if [ -z "$dt" ]; then
+		t_fail "the gate's cases stand in for the firmware" \
+			"no update-side fixture — call new_update_device, not new_device"
+		rc=127
+		return
+	fi
+	run env BRENN_PROVISIONING_ROOT="$store" \
+		BRENN_RAUC_INSTALLING="$installing" \
+		BRENN_TRYBOOT_BACKEND="$preinstall_backend" \
+		BRENN_TRYBOOT_SLOT_DIR="$slots" \
+		BRENN_TRYBOOT_DT_DIR="$dt" \
+		BRENN_TRYBOOT_STATE_DIR="$rauc_state" \
+		"$preinstall"
+}
+
+new_update_device preinstall-refusal
 stage_by_hand gen-2
-installing="${work}/preinstall-refusal/rauc-installing"
-run env BRENN_PROVISIONING_ROOT="$store" BRENN_RAUC_INSTALLING="$installing" "$preinstall"
+run_preinstall
 t_eq "an update is refused while a configuration change is on trial" "$rc" 1
 t_contains "and says why" "$(cat "$out")" \
 	"a configuration change is on trial; let it commit or revert before updating"
 t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
 
-new_device preinstall-allowed
-installing="${work}/preinstall-allowed/rauc-installing"
-run env BRENN_PROVISIONING_ROOT="$store" BRENN_RAUC_INSTALLING="$installing" "$preinstall"
+new_update_device preinstall-allowed
+run_preinstall
 t_eq "an update proceeds when no configuration change is in flight" "$rc" 0
 # Writing a slot pair takes minutes and nothing else on the device says so
 # until the flag is armed at the very end. This record is what a configuration
 # change started in that window refuses on.
 t_eq "and an install in progress is on record from the start" "$(present "$installing")" present
+
+# The configuration exclusion needs nothing from the boot backend, and it is the
+# one an operator can act on without reading anything else — so it is asked
+# first, and stays answerable on a device whose firmware report is unreadable.
+# Behind the backend's questions it would come out as "the running slot could
+# not be determined" instead, which names nothing to do about the candidate
+# actually holding the update up.
+new_update_device preinstall-refusal-precedence
+stage_by_hand gen-2
+rm -f "${dt}/partition"
+run_preinstall
+t_eq "a configuration change on trial is refused before the boot pair is asked about" "$rc" 1
+t_contains "and says which transaction is in the way" "$(cat "$out")" \
+	"a configuration change is on trial; let it commit or revert before updating"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
+
+# --- and the same rule between two operating-system transactions --------------
+
+# The two defaults the gate falls back to on the device, which every case below
+# overrides and therefore none of them checks. The backend it asks has to be
+# where the image installs one, and the markers it reads have to be the ones that
+# backend writes: a state directory that drifted apart would leave the gate
+# looking for refusals nobody records, allowing every install it exists to refuse.
+knob_default() {
+	sed -n "s/^[a-z_]*=\${${2}:-\([^}]*\)}\$/\1/p" "$1"
+}
+t_eq "the gate asks the backend the image installs" \
+	"$(knob_default "$preinstall" BRENN_TRYBOOT_BACKEND)" "${backend#"$rauc_overlay"}"
+# One side against the literal before the two are compared with each other. Two
+# extractions that both found nothing — a quote added around either assignment
+# would do it — compare equal and the comparison below stops guarding the drift
+# it exists for.
+t_eq "the backend says where it keeps them" \
+	"$(knob_default "$backend" BRENN_TRYBOOT_STATE_DIR)" /data/rauc
+t_eq "and the gate reads the markers where that backend writes them" \
+	"$(knob_default "$preinstall" BRENN_TRYBOOT_STATE_DIR)" \
+	"$(knob_default "$backend" BRENN_TRYBOOT_STATE_DIR)"
+
+# The dangerous window: this boot is trying slot B and nothing has answered for
+# it yet, so slot A — the pair RAUC would write — is the only proven system on
+# the device. An install that died part-way would leave neither pair bootable.
+new_update_device preinstall-os-trial 3 1
+run_backend_verb set-primary B
+run_preinstall
+t_eq "an update is refused on a boot that is itself an unanswered trial" "$rc" 1
+t_contains "and names both ways to answer it, and the reboot" "$(cat "$out")" \
+	"this boot is an unanswered operating-system trial; commit it (rauc status mark-good) or refuse it (rauc status mark-bad) and reboot before updating"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
+
+# The trial that was taken and fell back: this boot is the committed pair and the
+# unanswered marker belongs to the pair that failed. Reinstalling onto it and
+# rebooting is what the runbook prescribes, so the gate has to allow it — which
+# is why the condition is the *running* pair's marker and not any marker.
+new_update_device preinstall-os-fallback 2 0
+run_backend_verb set-primary B
+run_preinstall
+t_eq "an update proceeds after a fallback, onto the pair whose trial failed" "$rc" 0
+t_eq "and is on record" "$(present "$installing")" present
+
+# The trial that committed. mark-good removed the marker, so this pair is the
+# committed one and an install targets the superseded pair — the ordinary case
+# of updating twice in a row, which a gate keyed on the firmware's tryboot
+# report would have refused for the rest of the boot.
+new_update_device preinstall-os-committed 3 1
+run_preinstall
+t_eq "an update proceeds on a trial boot that has committed" "$rc" 0
+t_eq "and is on record" "$(present "$installing")" present
+
+# The first install after a flash, which is the gate's most common invocation and
+# the one with the least other evidence around it: nothing has ever recorded a
+# slot state, so the directory the gate reads two answers out of does not exist.
+# Its absence is "no trial owed, nothing refused" and not a reason to refuse.
+new_update_device preinstall-os-fresh-flash
+rmdir "$rauc_state"
+run_preinstall
+t_eq "an update proceeds on a device that has never recorded any slot state" "$rc" 0
+t_eq "and is on record" "$(present "$installing")" present
+
+# Between the refusal and the reboot. mark-bad removes the staged marker and
+# writes a refusal, but the refused pair keeps running — and RAUC marks its
+# target bad before writing, which on the committed pair hands the selector to
+# the pair that was just refused. A death mid-write there leaves a device booting
+# a refused system beside a half-written one, which is the worst state the
+# mechanism can reach.
+new_update_device preinstall-os-refused 3 1
+run_backend_verb set-state B bad
+run_preinstall
+t_eq "an update is refused while the running pair is itself refused" "$rc" 1
+t_contains "and says to reboot first" "$(cat "$out")" \
+	"this boot's operating-system pair has been refused; reboot to the committed pair before updating"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
+
+# The same marker on the pair that is not running: an install that died before it
+# staged anything leaves one, and installing again is how it is recovered from.
+new_update_device preinstall-os-other-refused 2 0
+run_backend_verb set-state B bad
+run_preinstall
+t_eq "an update proceeds onto a pair that carries a refusal" "$rc" 0
+t_eq "and is on record" "$(present "$installing")" present
+
+# Fail closed. RAUC needs the same answer to choose which pair to write, so a
+# device that cannot say what it booted cannot be updated safely by anyone — and
+# a gate that read the missing answer as "no marker" would be at its most
+# permissive exactly when the device is least understood.
+new_update_device preinstall-os-unknown
+rm -f "${dt}/partition"
+run_preinstall
+t_eq "an update is refused when the running pair cannot be determined" "$rc" 1
+t_contains "and says that is why" "$(cat "$out")" \
+	"the running slot could not be determined; refusing to update"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
+
+# The other half of the same guard, and the one that has already bitten this
+# codebase once: an answer that is empty but successful. Read as a slot name it
+# makes the marker path end in nothing, which is a file that never exists — so
+# the gate would be at its most permissive on the device it understands least.
+new_update_device preinstall-os-current-empty
+preinstall_backend="${work}/preinstall-os-current-empty/mute-current"
+cat >"$preinstall_backend" <<-'EOF'
+	#!/bin/sh
+	case "$1" in
+		get-current) exit 0 ;;
+		get-state) echo good ;;
+	esac
+EOF
+chmod 0755 "$preinstall_backend"
+run_preinstall
+t_eq "an update is refused when the running pair comes back as nothing" "$rc" 1
+t_contains "and says that is why" "$(cat "$out")" \
+	"the running slot could not be determined; refusing to update"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
+
+# Fail closed on the other question the gate asks. Whether the running pair has
+# been refused comes back from the backend rather than from the marker file, so a
+# backend that answers which pair is running and then cannot say how it stands
+# must not read as a pair that stands fine.
+new_update_device preinstall-os-state-mute
+preinstall_backend="${work}/preinstall-os-state-mute/mute-backend"
+cat >"$preinstall_backend" <<-'EOF'
+	#!/bin/sh
+	case "$1" in
+		get-current) echo A ;;
+		*) exit 1 ;;
+	esac
+EOF
+chmod 0755 "$preinstall_backend"
+run_preinstall
+t_eq "an update is refused when the running pair's state cannot be read" "$rc" 1
+t_contains "and says that is why" "$(cat "$out")" \
+	"the running pair's state could not be determined; refusing to update"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
+
+# And the same empty-but-successful answer to that second question. "Not bad" is
+# the reading that lets the install through, so it is the one that must not be
+# arrived at by default.
+new_update_device preinstall-os-state-empty
+preinstall_backend="${work}/preinstall-os-state-empty/empty-state"
+cat >"$preinstall_backend" <<-'EOF'
+	#!/bin/sh
+	case "$1" in
+		get-current) echo A ;;
+		get-state) exit 0 ;;
+	esac
+EOF
+chmod 0755 "$preinstall_backend"
+run_preinstall
+t_eq "an update is refused when the running pair's state comes back as nothing" "$rc" 1
+t_contains "and says that is why" "$(cat "$out")" \
+	"the running pair's state could not be determined; refusing to update"
+t_eq "and nothing records an install that was refused" "$(present "$installing")" missing
 
 # --- what apply refuses before it needs any privilege ------------------------
 

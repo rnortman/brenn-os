@@ -26,6 +26,17 @@
 # shellcheck disable=SC2034  # read by a sourcing script, which the linter cannot see
 imgread_dpkg_status_path=/usr/share/factory/var/lib/dpkg/status
 
+# The version the build stamped on an image, out of the description the layout
+# writes beside it. Canonical: callers that need this field must read it through
+# here so they cannot disagree. Empty output with a zero status is a description
+# that records no version, which is a caller's decision to make.
+imgread_image_version() {
+	local desc=$1
+	[ -f "$desc" ] || return 1
+	sed -n 's/^[[:space:]]*"IGconf_image_version"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' "$desc" |
+		head -n1
+}
+
 # An e2fsprogs tool by name. They install into /sbin on some distributions and
 # /usr/sbin on others, and neither is always on a non-root PATH, so this looks
 # rather than assuming.

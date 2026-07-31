@@ -216,4 +216,79 @@ wireless-regulatory deinstall ok config-files
 half-installed-thing install ok unpacked
 systemd-journal-remote install ok installed"
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# --- which build an image says it is ---------------------------------------
+
+# The canonical reader for that field: the packer names a bundle after it and
+# the image suite holds the stamped os-release to it, so its two answers — a
+# value, and empty at a zero status — are what those callers have to agree
+# about. A second copy of this sed is how they would stop agreeing.
+desc="${work}/image.json"
+cat >"$desc" <<'JSON'
+{
+    "IGversion": "2.2.0",
+    "IGmeta": {
+        "IGconf_device_class": "cm4",
+        "IGconf_image_version": "2026.07.30-1",
+        "IGconf_image_outputdir": "/work/image-brenn-os-reachy"
+    }
+}
+JSON
+t_eq "the version is read out of the description, from among the other keys" \
+	"$(imgread_image_version "$desc")" 2026.07.30-1
+
+grep -v IGconf_image_version "$desc" >"${work}/noversion.json"
+t_eq "a description that records no version reads as empty" \
+	"$(imgread_image_version "${work}/noversion.json")" ""
+t_eq "at a zero status, which leaves the decision with the caller" \
+	"$(imgread_image_version "${work}/noversion.json" >/dev/null; echo $?)" 0
+t_eq "and a description that is not there is a nonzero status" \
+	"$(imgread_image_version "${work}/absent.json" >/dev/null 2>&1; echo $?)" 1
+
+# --- the initramfs the firmware loads --------------------------------------
+
+# A concatenated cpio: zero or more plain archives, then one compressed. The
+# reader is fifty lines of segment parsing whose only other caller needs a built
+# image, and whose failure reads as "the image is broken" — which sends the next
+# person to the build rather than to the reader.
+if command -v cpio >/dev/null 2>&1 && command -v gzip >/dev/null 2>&1; then
+	src="${work}/segments"
+	mkdir -p "${src}/early" "${src}/late"
+	printf 'early segment\n' >"${src}/early/first"
+	printf 'late segment\n' >"${src}/late/second"
+	(cd "$src" && printf 'early\nearly/first\n' | cpio -o -H newc --quiet) \
+		>"${work}/seg1"
+	# Segments are padded to a block boundary, and the padding belongs to
+	# neither the archive before it nor the one after.
+	head -c 512 /dev/zero >"${work}/pad"
+	(cd "$src" && printf 'late\nlate/second\n' | cpio -o -H newc --quiet) |
+		gzip -c >"${work}/seg2"
+	cat "${work}/seg1" "${work}/pad" "${work}/seg2" >"${work}/initramfs"
+
+	rc=0
+	img_initramfs_unpack "${work}/initramfs" "${work}/unpacked" || rc=$?
+	t_eq "a concatenated initramfs unpacks" "$rc" 0
+	t_eq "the plain segment's files land" \
+		"$(cat "${work}/unpacked/early/first" 2>/dev/null)" "early segment"
+	t_eq "and so do the compressed segment's" \
+		"$(cat "${work}/unpacked/late/second" 2>/dev/null)" "late segment"
+
+	# A damaged archive has to report as one. Reported as unpacked, its
+	# missing files read as a build that dropped them — the exact misreading
+	# the image lane's breadcrumb test exists to prevent.
+	head -c 100 "${work}/initramfs" >"${work}/truncated"
+	rc=0
+	img_initramfs_unpack "${work}/truncated" "${work}/truncated-out" || rc=$?
+	t_fails "a truncated initramfs does not report as unpacked" "$rc"
+
+	rc=0
+	printf 'not an initramfs at all\n' | gzip -c >"${work}/notcpio.gz"
+	img_initramfs_unpack "${work}/notcpio.gz" "${work}/notcpio-out" || rc=$?
+	t_fails "nor does one whose compressed segment is not a cpio archive" "$rc"
+else
+	echo "SKIP  cpio and gzip are not both installed here, so the initramfs reader cannot be exercised (installed and enforced in CI)"
+fi
+
 t_done

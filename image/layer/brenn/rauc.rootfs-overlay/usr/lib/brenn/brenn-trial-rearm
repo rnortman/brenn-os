@@ -1,0 +1,50 @@
+#!/bin/sh
+#
+# Keep a staged trial armed through whatever reboot verb the operator types.
+#
+# Staging an update writes two things: a marker on the writable partition
+# saying a pair is staged and unanswered, and the reboot parameter in RAM that
+# makes the next boot the trial. Only the first survives anything. The reboot,
+# halt and poweroff compat verbs delete the parameter file while parsing their
+# own arguments — before any shutdown work begins — so the device takes an
+# ordinary reboot, comes up on the pair it was already running, and leaves
+# behind state that looks exactly like a trial that failed. Nothing was tried.
+#
+# This runs from the stop side of a unit that is active for the whole boot, so
+# it happens inside the shutdown transaction: after the verb has done its
+# deleting, and before PID 1 reads the file to pass the argument to the
+# firmware. The durable marker is therefore the arming, and the parameter file
+# is only its transport.
+#
+# It refuses to do this on a trial boot. The deadman's whole job is to reboot
+# out of a candidate that came up and never committed, and re-arming under it
+# would send the device back into the same candidate every ten minutes instead
+# of home to the committed pair.
+
+set -eu
+
+self=${0##*/}
+
+state_dir=${BRENN_TRYBOOT_STATE_DIR:-/data/rauc}
+reboot_param=${BRENN_TRYBOOT_REBOOT_PARAM:-/run/systemd/reboot-param}
+tryboot_check=${BRENN_TRYBOOT_CHECK:-/usr/lib/brenn/brenn-tryboot-check}
+
+tryboot_param='0 tryboot'
+
+staged=""
+for marker in "${state_dir}"/staged-*; do
+	[ -e "$marker" ] || continue
+	staged=${marker##*/staged-}
+	break
+done
+
+[ -n "$staged" ] || exit 0
+
+if "$tryboot_check"; then
+	echo "${self}: slot ${staged} is on trial this boot; leaving the reboot to it" >&2
+	exit 0
+fi
+
+mkdir -p "$(dirname "$reboot_param")"
+printf '%s\n' "$tryboot_param" >"$reboot_param"
+echo "${self}: slot ${staged} is staged and unanswered; this reboot is its trial" >&2

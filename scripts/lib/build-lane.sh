@@ -37,6 +37,9 @@
 lane_repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 lane_prog=$(basename -- "$0")
 
+# shellcheck source=scripts/lib/overlay-conf.sh
+. "${lane_repo_root}/scripts/lib/overlay-conf.sh"
+
 # Where the repo appears inside the container. A fixed path rather than the
 # host's, so that whatever the build records of its own paths is the same on
 # every machine that runs this lane.
@@ -66,31 +69,20 @@ lane_split_lines() {
 	done <<<"$2"
 }
 
-# The knobs, resolved once. An exported value is the more specific statement of
-# intent and outranks the overlay file; the overlay outranks the default.
+# The knobs, resolved once, through the shared overlay precedence: exported
+# value, then the overlay file, then the default here.
+#
+# Two of them default to empty on purpose — an unset apt cache leaves the
+# builder's own default in place, and an unset version keeps the lint path,
+# which never needs one, working on hosts that cannot produce one.
 lane_load_conf() {
-	local conf env_lane env_scratch env_cache env_version env_podman env_flags
-	conf=${BRENN_BUILD_CONF:-${lane_repo_root}/.local/build.conf}
-	env_lane=${BRENN_BUILD_CONTAINER:-}
-	env_scratch=${BRENN_SCRATCH_DIR:-}
-	env_cache=${BRENN_APT_CACHEDIR:-}
-	env_version=${BRENN_IMAGE_VERSION:-}
-	env_podman=${BRENN_PODMAN:-}
-	env_flags=${BRENN_PODMAN_RUN_FLAGS:-}
-
-	if [ -f "$conf" ]; then
-		# shellcheck disable=SC1090  # a local overlay, absent from the tree
-		. "$conf"
-	fi
-
-	BRENN_BUILD_CONTAINER=${env_lane:-${BRENN_BUILD_CONTAINER:-auto}}
-	BRENN_SCRATCH_DIR=${env_scratch:-${BRENN_SCRATCH_DIR:-${lane_repo_root}/work/scratch}}
-	BRENN_APT_CACHEDIR=${env_cache:-${BRENN_APT_CACHEDIR:-}}
-	# No default: an unset version stays empty so the lint path, which never
-	# needs a version, works on hosts that cannot produce one.
-	BRENN_IMAGE_VERSION=${env_version:-${BRENN_IMAGE_VERSION:-}}
-	BRENN_PODMAN=${env_podman:-${BRENN_PODMAN:-podman}}
-	BRENN_PODMAN_RUN_FLAGS=${env_flags:-${BRENN_PODMAN_RUN_FLAGS:-}}
+	overlay_load_conf "${BRENN_BUILD_CONF:-${lane_repo_root}/.local/build.conf}" \
+		BRENN_BUILD_CONTAINER=auto \
+		"BRENN_SCRATCH_DIR=${lane_repo_root}/work/scratch" \
+		BRENN_APT_CACHEDIR= \
+		BRENN_IMAGE_VERSION= \
+		BRENN_PODMAN=podman \
+		BRENN_PODMAN_RUN_FLAGS=
 
 	case "$BRENN_BUILD_CONTAINER" in
 		auto | never | always) ;;

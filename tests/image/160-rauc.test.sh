@@ -116,10 +116,22 @@ fi
 # --- the backend and its helpers --------------------------------------------
 
 for prog in "$EXPECT_RAUC_BACKEND" "$EXPECT_TRYBOOT_CHECK" "$EXPECT_DEADMAN_EXEC" \
-	"$EXPECT_RAUC_PREINSTALL"; do
+	"$EXPECT_REARM_EXEC" "$EXPECT_TRIAL_REPORT_EXEC" "$EXPECT_RAUC_PREINSTALL"; do
 	t_eq "${prog} is installed" "$(img_ext4_type "$IMG_SPEC" "$prog")" regular
 	t_eq "${prog} is executable" "$(img_ext4_mode "$IMG_SPEC" "$prog")" 755
 done
+
+# Where the backend keeps the refusals and the staged trials. RAUC's status
+# output does not report them, so the question "was an update tried?" is
+# answered by reading this directory directly — which only works if it is the
+# directory the shipped backend actually defaults to.
+if backend_src=$(img_ext4_cat "$IMG_SPEC" "$EXPECT_RAUC_BACKEND"); then
+	t_contains "the backend keeps its markers in ${EXPECT_RAUC_STATE_DIR}" \
+		"$backend_src" "state_dir=\${BRENN_TRYBOOT_STATE_DIR:-${EXPECT_RAUC_STATE_DIR}}"
+else
+	t_fail "the backend keeps its markers in ${EXPECT_RAUC_STATE_DIR}" \
+		"cannot read ${EXPECT_RAUC_BACKEND}"
+fi
 
 # --- what makes a boot worth keeping ----------------------------------------
 
@@ -206,6 +218,71 @@ if link=$(img_ext4_link "$IMG_SPEC" "${units}/timers.target.wants/${EXPECT_DEADM
 	t_eq "the deadman timer is part of the boot" "$link" "../${EXPECT_DEADMAN_TIMER}"
 else
 	t_fail "the deadman timer is part of the boot" "nothing wants it"
+fi
+
+# --- keeping a staged trial armed -------------------------------------------
+
+# The arming a staged update depends on lives in RAM and is deleted by three
+# verbs an operator reaches for by habit. This unit writes it again on the way
+# down, so what decides whether a trial happens is the marker on flash rather
+# than which word was typed.
+rearm="${units}/${EXPECT_REARM_UNIT}"
+if content=$(img_ext4_cat "$IMG_SPEC" "$rearm"); then
+	t_eq "the re-arm runs from the stop side" \
+		"$(img_ini_value "$content" ExecStop)" "$EXPECT_REARM_EXEC"
+
+	# A unit that is not active at the end of the boot is not stopped at the
+	# end of it either, and a stop that never runs re-arms nothing.
+	t_eq "and the unit is active for the whole boot to be stopped at the end of it" \
+		"$(img_ini_value "$content" RemainAfterExit)" "$EXPECT_REARM_REMAIN"
+
+	# The record it reads is on the persistent partition. Ordered after that
+	# mount is also ordered before it goes away, without which the stop
+	# command can run against an unmounted directory, read nothing and arm
+	# nothing — the original failure, restored by a shutdown race.
+	t_eq "and is ordered against the partition the record is on" \
+		"$(img_ini_value "$content" RequiresMountsFor)" "$EXPECT_REARM_MOUNT"
+else
+	t_fail "the re-arm is wired" "no unit at ${rearm}"
+fi
+
+if link=$(img_ext4_link "$IMG_SPEC" "${units}/multi-user.target.wants/${EXPECT_REARM_UNIT}"); then
+	t_eq "the re-arm is part of the boot" "$link" "../${EXPECT_REARM_UNIT}"
+else
+	t_fail "the re-arm is part of the boot" "nothing wants it"
+fi
+
+# --- saying what the last trial boot found ----------------------------------
+
+# A candidate that dies before the network is up cannot report anything itself.
+# Its initramfs leaves a record on the selector partition and this reads it out
+# on the next boot that came up, into the journal that leaves the device the
+# usual way. 165 is what holds the writing half.
+report="${units}/${EXPECT_TRIAL_REPORT_UNIT}"
+if content=$(img_ext4_cat "$IMG_SPEC" "$report"); then
+	t_eq "the report runs the reader" "$(img_ini_value "$content" ExecStart)" \
+		"$EXPECT_TRIAL_REPORT_EXEC"
+
+	# The record is found by GPT label, and those symlinks resolve as the local
+	# filesystems are mounted. Reading before that is reading nothing.
+	t_contains "and after the partitions it reads are available" \
+		"$(img_ini_values "$content" After | tr ' ' '\n')" local-fs.target
+
+	# It mounts read-only and clears nothing: the record is cleared by the next
+	# staging, which is a write on a system that has already proved itself. An
+	# ordinary boot writing flash here would undo the reason the rest of the
+	# trial machinery is gated on a condition.
+	t_has "and mounts the selector read-only" \
+		"$(img_ext4_cat "$IMG_SPEC" "$EXPECT_TRIAL_REPORT_EXEC")" \
+		'mount -t vfat -o ro,'
+else
+	t_fail "the report is wired" "no unit at ${report}"
+fi
+
+if link=$(img_ext4_link "$IMG_SPEC" "${units}/multi-user.target.wants/${EXPECT_TRIAL_REPORT_UNIT}"); then
+	t_eq "the report is part of the boot" "$link" "../${EXPECT_TRIAL_REPORT_UNIT}"
+else
+	t_fail "the report is part of the boot" "nothing wants it"
 fi
 
 # --- where an update lands --------------------------------------------------

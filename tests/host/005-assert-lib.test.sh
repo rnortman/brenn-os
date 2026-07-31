@@ -99,4 +99,34 @@ case "$out" in
 	*) t_fail "and both are delimited, so the difference is on screen" "output: ${out}" ;;
 esac
 
+# --- the environment a subject runs in -------------------------------------
+
+# The third helper that decides rather than reports: it settles what a tool
+# under assertion can read out of the environment. Its failure mode is silent
+# and one-sided — a mistyped prefix leaves the knobs in place, and only on a
+# host that has them set, which is the configured build host this exists to
+# protect. A bare runner would stay green either way, so the case is made here
+# by setting them.
+export BRENN_TEST_SCRUB_ONE=from-the-host
+export BRENN_TEST_SCRUB_TWO=also-from-the-host
+export BRENN_TEST_KEEP=not-this-one
+
+t_eq "every variable under the prefix is taken out of the subject's environment" \
+	"$(t_env_scrubbed BRENN_TEST_SCRUB_ env | grep -c '^BRENN_TEST_SCRUB_')" 0
+# The subject reads its own environment, so the expansions below belong to the
+# shell being run and not to this one.
+# shellcheck disable=SC2016
+t_eq "and one outside it is left alone" \
+	"$(t_env_scrubbed BRENN_TEST_SCRUB_ sh -c 'echo "${BRENN_TEST_KEEP:-}"')" not-this-one
+
+# The removals are applied before the assignments, which is what lets a caller
+# scrub a whole prefix and then set one member of it deliberately — the shape
+# every bundle case uses to point the tool at a conf file of its own.
+# shellcheck disable=SC2016
+t_eq "a value the caller passes after the prefix still arrives" \
+	"$(t_env_scrubbed BRENN_TEST_SCRUB_ BRENN_TEST_SCRUB_ONE=deliberate \
+		sh -c 'echo "${BRENN_TEST_SCRUB_ONE:-}"')" deliberate
+
+unset BRENN_TEST_SCRUB_ONE BRENN_TEST_SCRUB_TWO BRENN_TEST_KEEP
+
 t_done

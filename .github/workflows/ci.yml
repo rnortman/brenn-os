@@ -37,11 +37,15 @@ jobs:
       # half-hour build. This is the tool that packs a bundle, not the one that
       # installs it: the version that matters on a device is pinned into the
       # image.
+      #
+      # cpio: the host lane exercises the initramfs reader the image suite
+      # unpacks with against a synthetic archive, which is the only place that
+      # reader runs without a half-hour build.
       - name: Install gate dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            python3-debian rauc squashfs-tools
+            python3-debian rauc squashfs-tools cpio
 
       # ubuntu-latest preinstalls shellcheck, but its version drifts with the
       # runner image, so a tree that lints clean on a developer's machine can go
@@ -153,7 +157,8 @@ jobs:
       #
       # TODO(ci-container-toolchain): this installs whatever the runner's
       # archive serves today, which is the one input of this lane that is not
-      # pinned. The container lane's toolchain is.
+      # pinned. The container lane pins the image it builds in and the runtime
+      # it executes through; only its podman comes from the runner's archive.
       - name: Install builder host dependencies
         working-directory: rpi-image-gen
         run: |
@@ -181,8 +186,12 @@ jobs:
           "$RUNNER_TEMP/bin/syft" --version | grep -qw "${SYFT_VERSION}"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
 
-      - name: Install bundle tooling
-        run: sudo apt-get install -y --no-install-recommends rauc squashfs-tools
+      # rauc and squashfs-tools are what the host suite packs and verifies a
+      # bundle with. cpio is what the image suite unpacks the built initramfs
+      # with: without it that assertion skips, and a suite that skipped a test
+      # still passes — which is how a diagnostic silently stops shipping.
+      - name: Install the tools the suites read with
+        run: sudo apt-get install -y --no-install-recommends rauc squashfs-tools cpio
 
       - name: Build the image
         run: make image PROFILE=reachy
@@ -247,6 +256,13 @@ jobs:
     if: needs.image-scope.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 350
+    # The runtime pin, written once: the step that installs it and the step
+    # that asserts what podman resolved read the same two values, so a bump
+    # cannot move one and leave the other asserting the version before it.
+    # Quoted because an unquoted 1.20 is the number 1.2.
+    env:
+      CRUN_VERSION: "1.28"
+      CRUN_SHA256: 2aa6b7024a9c9f153895c0d11ae233d3758f54844011c3a039e3e89048d01d42
     steps:
       - uses: actions/checkout@v7
         with:
@@ -254,14 +270,43 @@ jobs:
 
       # podman and a subordinate id range run the container rootless; the qemu
       # packages give the host the aarch64 registration the container borrows;
-      # mtools is what the image suite reads the vfat partitions with, and is
-      # not on the runner. The builder's own dependencies are in the container
-      # image and are not installed here — that is the whole point of the lane.
+      # mtools is what the image suite reads the vfat partitions with and cpio
+      # is what it unpacks the built initramfs with; neither is on the runner.
+      # The builder's own dependencies are in the container image and are not
+      # installed here — that is the whole point of the lane.
       - name: Install the container lane's host tools
         run: |
           sudo apt-get update
           sudo apt-get install -y podman uidmap qemu-user-static binfmt-support
-          sudo apt-get install -y --no-install-recommends mtools
+          sudo apt-get install -y --no-install-recommends mtools cpio
+
+      # The runtime podman hands a container to, pinned the way this repo pins
+      # every other fetched tool: version, sha256, and a check that what runs is
+      # what was pinned. Unpinned it is whatever pairing the runner image
+      # happens to carry — ubuntu-24.04 serves podman 4.9.3 against crun 1.14.1,
+      # and a podman that writes OCI spec v1.2 configs against a crun too old to
+      # parse one refuses to create a container at all, which is how this lane
+      # went red without a line of the tree changing.
+      #
+      # The drop-in is what makes the pin load-bearing: naming the runtime by
+      # path leaves nothing to PATH search order, which podman does not consult
+      # for its runtime anyway.
+      - name: Install crun
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o crun \
+            "https://github.com/containers/crun/releases/download/${CRUN_VERSION}/crun-${CRUN_VERSION}-linux-amd64"
+          echo "${CRUN_SHA256}  crun" | sha256sum -c -
+          chmod +x crun
+          sudo install -m 0755 crun /usr/local/bin/crun
+          mkdir -p "$HOME/.config/containers"
+          cat > "$HOME/.config/containers/containers.conf" <<'CONF'
+          [engine]
+          runtime = "crun"
+
+          [engine.runtimes]
+          crun = ["/usr/local/bin/crun"]
+          CONF
 
       # Rootless podman maps the container's root to the invoking user and
       # every other uid into a subordinate range, which the user has to own.
@@ -274,6 +319,27 @@ jobs:
             grep -q "^${user}:" "$f" || echo "${user}:200000:65536" | sudo tee -a "$f" >/dev/null
           done
           podman system migrate
+
+      - name: Report and assert the container toolchain
+        run: |
+          podman version
+          distro=$(/usr/bin/crun --version 2>/dev/null | sed -n 's/^crun version //p' | head -n1)
+          echo "distro crun: ${distro:-none}"
+          resolved=$(podman info --format '{{.Host.OCIRuntime.Path}}')
+          version=$(podman info --format '{{.Host.OCIRuntime.Version}}' |
+            sed -n 's/^crun version //p' | head -n1)
+          echo "podman resolved runtime: ${resolved} (crun ${version})"
+          test "$resolved" = /usr/local/bin/crun
+          test "$version" = "$CRUN_VERSION"
+          # The pin answers a podman/crun spec-version mismatch, and crun has
+          # parsed every OCI 1.x spec version since 1.14.3. A distro runtime
+          # at or past that version means the red run had some other cause and
+          # the diagnosis wants reopening — said out loud here rather than left
+          # to be inferred from a lane that went green.
+          if [ -n "$distro" ] &&
+             [ "$(printf '%s\n%s\n' 1.14.3 "$distro" | sort -V | head -n1)" = 1.14.3 ]; then
+            echo "::warning::distro crun ${distro} already parses current OCI specs — the spec-version diagnosis behind this pin does not hold"
+          fi
 
       # The container carries no qemu of its own: arm64 binaries in the target
       # root filesystem run through the host's registration, and the F flag is
