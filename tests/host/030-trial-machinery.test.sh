@@ -235,6 +235,13 @@ run_backend set-state B good
 t_eq "committing succeeds" "$rc" 0
 t_eq_text "the pair that proved itself is now the committed one" \
 	"$(cat "$autoboot")" "$(tryboot_autoboot_text 3 2)"
+# The commit path notes a selector it had to repair, and that note is the fleet's
+# only evidence that a FAT rewrite ever corrupted one. A commit of an undamaged
+# selector rewrites the file too, so the note is all that separates the two — one
+# that fired on every update would turn the evidence into background noise.
+t_lacks "and a commit of an undamaged selector reports no damage" \
+	"$(cat "$err")" "belongs to no slot"
+
 run_backend get-primary
 t_eq "the committed slot is the one that was tried" "$(said)" B
 t_eq "committing leaves no armed flag behind" "$(armed)" "(not armed)"
@@ -299,6 +306,19 @@ t_eq "and leaves the trial owed" "$(staged_markers)" staged-B
 t_eq "and the flag stays armed, so the next reboot is the trial again" \
 	"$(armed)" "0 tryboot"
 
+# The runbook quotes these repair notes verbatim, as the string an operator greps
+# during an incident to see what the commit found. The drift between the two is
+# invisible until then, so it is asserted rather than trusted: the line this run
+# printed, with the partition number reduced to the placeholder the doc writes it
+# with, has to appear in the shipped runbook.
+runbook_quotes() {
+	local printed
+	printed=$(sed -n 's/^[^:]*: \(the selector named .*rewriting it\)$/\1/p' "$err" |
+		sed 's/boot_partition [0-9][0-9]*/boot_partition <n>/')
+	t_eq "and the runbook quotes the line it printed" \
+		"$(grep -cF "$printed" "${BRENN_REPO_ROOT}/docs/update.md")" 1
+}
+
 # A selector file naming no committed pair — what a power cut during the one
 # write with no atomicity guarantee can leave on a partition the firmware still
 # boots from. On this path falling through is the repair, not a guess: the pair
@@ -318,6 +338,34 @@ t_eq "committing against a selector naming no committed pair succeeds" "$rc" 0
 # that line is the whole record that the file was ever damaged.
 t_has "and says it repaired the selector rather than tripping over it" \
 	"$(cat "$err")" "the selector named no committed pair; rewriting it"
+runbook_quotes
+t_eq_text "and rewrites it to name the pair that proved itself" \
+	"$(cat "$autoboot")" "$(tryboot_autoboot_text 3 2)"
+t_eq "with the trial answered" "$(staged_markers)" "(none)"
+t_eq "and no armed flag left behind" "$(armed)" "(not armed)"
+
+# The same damage one digit over: a committed value that reads cleanly and names
+# a partition belonging to neither pair. The repair is identical — the pair being
+# committed has just proved itself — but this value compares unequal to the
+# running pair exactly as a routine commit does, so the only thing separating the
+# two in a journal is the line saying which one it was. On a fleet where a FAT
+# rewrite is the one write with no atomicity guarantee, that line is the evidence
+# that the corruption is real and happening.
+new_device commits-with-an-alien-committed-pair 3 1
+printf '0 tryboot\n' >"$reboot_param"
+: >"${state}/staged-B"
+# The shape a staging leaves, with the committed value corrupted: the candidate
+# line still names the pair this boot came up on, so the repair has to change both
+# lines and the comparison below covers the whole file.
+tryboot_autoboot_text 9 3 >"$autoboot"
+run_backend set-state B good
+t_eq "committing against a selector naming a partition of neither pair succeeds" \
+	"$rc" 0
+# This run's own stderr, not the whole suite's: the refusal path dies with the
+# same words, so a wider read would pass on another case's output.
+t_has "and says which value it found rather than logging a routine commit" \
+	"$(cat "$err")" "boot_partition 9, which belongs to no slot; rewriting it"
+runbook_quotes
 t_eq_text "and rewrites it to name the pair that proved itself" \
 	"$(cat "$autoboot")" "$(tryboot_autoboot_text 3 2)"
 t_eq "with the trial answered" "$(staged_markers)" "(none)"
@@ -414,6 +462,26 @@ t_eq "and the trial is answered all the same" "$(staged_markers)" "(none)"
 t_eq "and the flag is disarmed here too" "$(armed)" "(not armed)"
 run_backend get-state B
 t_eq "and this refusal is on record as well" "$(said)" bad
+
+# The other side of a refusal that fails, and the one the runbook reads the state
+# directory to tell apart: a failure before the refusal is recorded at all. The
+# label lookup is the first thing the verb does, so nothing it would have written
+# is written — the refusal is absent, the trial is still owed, and the flag that
+# re-enters the candidate is still armed. An operator is told to conclude "nothing
+# this step wanted has happened" from exactly those three readings, so the order
+# the backend does its work in is what makes that conclusion true.
+new_device refuses-before-anything-is-recorded 3 1
+printf '0 tryboot\n' >"$reboot_param"
+: >"${state}/staged-B"
+rm -f "${slots}/boot_b"
+run_backend set-state B bad
+t_fails "refusing a pair whose label has gone fails" "$rc" "$(cat "$err")"
+t_has "and blames the label" "$(cat "$err")" "no partition labelled boot_b"
+t_eq "with no refusal recorded" \
+	"$([ -e "${state}/bad-B" ] && echo recorded || echo "(none)")" "(none)"
+t_eq "the trial still owed" "$(staged_markers)" staged-B
+t_eq "and the flag still armed, so the next reboot re-enters the candidate" \
+	"$(armed)" "0 tryboot"
 
 # --- refusing to guess ------------------------------------------------------
 

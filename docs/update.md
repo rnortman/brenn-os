@@ -372,13 +372,22 @@ than after.
 **An unanswered trial repairs it by committing.** If `ls /data/rauc` shows a
 `staged-<slot>` file for the pair this boot is running and nothing has refused
 that pair, `rauc status mark-good` writes a whole well-formed file naming the
-pair that has just proved itself. That is the ordinary repair and it needs
-nothing below; the backend says so in its own words, in `journalctl -u
-rauc.service`:
+pair that has just proved itself. That is the ordinary repair, and what it found
+is in its own words in `journalctl -u rauc.service` — one line per shape of the
+damage, a committed value it could not read at all and one naming a partition of
+neither pair:
 
 ```
 rpi-tryboot-backend: the selector named no committed pair; rewriting it
+rpi-tryboot-backend: the selector named boot_partition <n>, which belongs to no slot; rewriting it
 ```
+
+Each is printed on the way to the write it announces, so it names the damage
+rather than proves the repair. What proves the repair is `mark-good` exiting
+zero, or `rauc status` reporting a `Primary` again. A nonzero exit with one of
+these lines in the journal means the file is still as damaged as the line says
+and the trial is still unanswered: repair it by hand, below, before the deadman
+reboots out of the trial.
 
 By hand, for every other case. The two partition numbers come from this unit's
 labels rather than from a table, so read them first:
@@ -493,12 +502,23 @@ point of the trial. What it is not is talkative:
    happened regardless: the refusal is recorded, the `staged-<slot>` file is
    gone, ordinary reboots are ordinary again, and the device is running its
    committed pair rather than the refused one — not stuck, but repair the
-   selector before the next install ("Repairing the selector file"). Any other
-   line failed earlier than the refusal itself, and none of that can be assumed:
-   `ls /data/rauc` will still show the `staged-<slot>` file, the next orderly
-   reboot re-enters the candidate exactly as this step opened, and the failure
-   to fix is the one the line names — a `/data` that cannot be written and a
-   partition label that does not resolve are the two that reach here.
+   selector before the next install ("Repairing the selector file"). For any
+   other line the refusal is one step in a sequence and the line alone does not
+   say which side of it the run died on. `ls /data/rauc` does:
+
+   - **The `staged-<slot>` file is still there** — the refusal was not recorded.
+     The next orderly reboot re-enters the candidate exactly as this step
+     opened, nothing this step wanted has happened, and the failure to fix is
+     the one the line names.
+   - **The `staged-<slot>` file is gone and a `bad-<slot>` file is there** — the
+     refusal is recorded and the one-shot flag is disarmed, but the run died at
+     or after the point where it opens the selector, so what that file says now
+     is unread. Read it before trusting an ordinary reboot; the mount steps
+     under "Repairing the selector file" double as the diagnostic. Five
+     canonical lines naming the committed pair mean ordinary reboots are
+     ordinary again, and the failure the line names is what to investigate
+     before the next install. A selector that will not mount, or that says
+     anything else, is repaired first.
 
    The reinstall is permitted by design rather than by luck: the pre-install gate
    keys on the *running* pair's trial, and on this boot the unanswered trial

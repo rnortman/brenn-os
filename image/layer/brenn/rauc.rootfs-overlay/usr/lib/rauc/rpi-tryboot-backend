@@ -340,6 +340,18 @@ case "${1:-}" in
 				if ! tb_committed=$(committed_partition); then
 					tb_committed=""
 					note "the selector named no committed pair; rewriting it"
+				elif [ "$tb_committed" != "$tb_slot" ] &&
+					[ "$tb_committed" != "$tb_other" ]; then
+					# A committed value naming neither pair is the same
+					# corruption as an unreadable one, one digit over, and
+					# the write below repairs it the same way — but it
+					# compares unequal to the running pair like any
+					# ordinary commit does, so without this line the
+					# journal shows a routine commit and nothing records
+					# that the file was ever damaged. Diagnostic phrase
+					# must match the refusal path's, so both sightings
+					# read as one thing in a log.
+					note "the selector named boot_partition ${tb_committed}, which belongs to no slot; rewriting it"
 				fi
 				if [ "$tb_committed" != "$tb_slot" ]; then
 					write_autoboot "$tb_slot" "$tb_other"
