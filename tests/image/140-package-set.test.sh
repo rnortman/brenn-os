@@ -19,6 +19,8 @@ set -uo pipefail
 . "${BRENN_TESTS_LIB}/assert.sh"
 # shellcheck source=tests/lib/image.sh
 . "${BRENN_TESTS_LIB}/image.sh"
+# shellcheck source=tests/lib/manifest.sh
+. "${BRENN_TESTS_LIB}/manifest.sh"
 
 img_open_system_root
 
@@ -41,7 +43,7 @@ if [ ! -f "$manifest" ]; then
 	t_done
 fi
 
-expected=$(sed -e 's/#.*//' -e 's/[[:space:]]//g' "$manifest" | grep -v '^$' | sort -u)
+expected=$(manifest_entries "$manifest")
 
 t_eq_text "the installed package set is exactly the tracked manifest" \
 	"$installed" "$expected"

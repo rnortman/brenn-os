@@ -1,16 +1,34 @@
 # Exact versions for everything that comes from the Raspberry Pi archive.
 #
 # That archive publishes no snapshot service, so a suite name alone does not
-# identify a build. These pins are the only thing that makes two builds of the
-# same commit resolve the same kernel and boot firmware.
+# identify a build. These pins make two builds of the same commit resolve the
+# same kernel and boot firmware against the archive as it stands today, and they
+# make drift detectable — not impossible. apt assigns priority to versions the
+# index actually offers, so once the archive supersedes a version and stops
+# publishing it under the name the build installs, the pin matches nothing, the
+# sole published version wins at its default priority, and the build falls
+# forward in silence. The image suite is what catches that:
+# tests/image/080-package-pins.test.sh compares installed versions against this
+# file, and tests/image/140-package-set.test.sh compares installed names against
+# the tracked manifest. Building against an archive we control, so that an old
+# commit still resolves what it named, is TODO(rpi-archive-mirror).
 #
 # Priority 1001 is above the "never downgrade" threshold, so a newer version
 # that has already slipped into a cache is rolled back rather than kept.
 #
-# Bumping a version here is a deliberate act: it changes what boots.
+# Bumping a version here is a deliberate act: it changes what boots. Three
+# steps:
+#
+#   1. change the version in the stanza below;
+#   2. change the kernel entries in tests/image/expected-*.packages, which spell
+#      the version inside the package name — tests/host/082-kernel-pin-manifest
+#      holds the two files to each other, so a half-done bump fails `make check`
+#      rather than a build;
+#   3. `make image PROFILE=<profile>` then `make test-image PROFILE=<profile>`,
+#      and review what changed.
 
 Package: linux-image-* linux-headers-* linux-kbuild-* linux-base-*
-Pin: version 1:6.18.34-1+rpt1
+Pin: version 1:6.18.39-1+rpt1
 Pin-Priority: 1001
 
 Package: raspi-firmware

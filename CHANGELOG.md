@@ -74,6 +74,23 @@ today; none of it has yet run on hardware.
   independently scans the tree, runs the gate, builds the image, asserts against
   it, and round-trips an update bundle with a throwaway key.
 
+### Changed
+
+- **The pinned Raspberry Pi kernel, 6.18.34 to 6.18.39** (`1:6.18.39-1+rpt1`).
+  That archive supersedes its kernel metapackage in place and publishes no
+  snapshot service, so the pinned version stopped being offered under the name
+  the build installs. An apt pin can only prioritise a version the index still
+  carries: with nothing to match, the archive's current kernel installed at its
+  default priority and the build succeeded without saying anything. The image
+  suite caught the drift, which is what it is for, and the bump is the
+  deliberate act the pin file asks for rather than a silent fall-forward.
+  Holding 6.18.34 was considered and refused — it needs the kernel metapackage
+  abandoned for versioned package names, a second fork of builder content, to
+  buy the same failure again whenever the archive drops those names too.
+  The pin and the package manifest are now held to the same kernel by `make
+  check`, so a bump that edits one and not the other fails at the commit hook
+  instead of after a build.
+
 ### Fixed
 
 - **Builds of a commit more than a week old.** The Debian snapshot the root

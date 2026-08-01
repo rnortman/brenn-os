@@ -4,10 +4,13 @@
 # pinned.
 #
 # The Raspberry Pi archive publishes no snapshot service, so an apt preferences
-# file is the only thing making two builds of one commit resolve the same
-# kernel. A pin that silently fails to apply — a renamed package, a priority
-# that lost a tie — produces a working image built from something nobody chose,
-# and the difference is invisible until the hardware behaves differently.
+# file is what makes two builds of one commit resolve the same kernel against
+# the archive as it stands today: resolution is deterministic and drift is
+# detectable here, not impossible. A pin that fails to apply — a renamed
+# package, a version the archive stopped publishing, a priority that lost a tie
+# — produces a working image built from something nobody chose, and nothing in
+# the build says so. This is where the difference becomes visible, rather than
+# on hardware behaving differently.
 #
 # The pin file is the source of the expectation on purpose: there is one place
 # to bump a version, and this asserts the image agrees with it.
@@ -18,6 +21,8 @@ set -uo pipefail
 . "${BRENN_TESTS_LIB}/assert.sh"
 # shellcheck source=tests/lib/image.sh
 . "${BRENN_TESTS_LIB}/image.sh"
+# shellcheck source=tests/lib/pin.sh
+. "${BRENN_TESTS_LIB}/pin.sh"
 
 img_open_system_root
 
@@ -32,17 +37,10 @@ fi
 # Pin stanzas: a Package: line of shell-glob patterns followed by a version.
 patterns=()
 versions=()
-while IFS= read -r line; do
-	case "$line" in
-		'Package: '*) pending=${line#Package: } ;;
-		'Pin: version '*)
-			[ -n "${pending:-}" ] || continue
-			patterns+=("$pending")
-			versions+=("${line#Pin: version }")
-			pending=""
-			;;
-	esac
-done <"$pinfile"
+while IFS=$'\t' read -r pattern_set version; do
+	patterns+=("$pattern_set")
+	versions+=("$version")
+done < <(pin_stanzas "$pinfile")
 
 if [ ${#patterns[@]} -eq 0 ]; then
 	t_fail "the pin file declares version pins" "no 'Pin: version' stanza in ${pinfile}"

@@ -98,9 +98,9 @@ libsystemd-shared
 libsystemd0
 libudev1
 linux-base
-linux-base-6.18.34+rpt-rpi-v8
+linux-base-6.18.39+rpt-rpi-v8
 linux-base-rpi-v8
-linux-image-6.18.34+rpt-rpi-v8
+linux-image-6.18.39+rpt-rpi-v8
 linux-image-rpi-v8
 logsave
 mmc-utils
