@@ -139,4 +139,76 @@ else
 		"no single device node to read"
 fi
 
+# The same board as the kernel's audio driver sees it. The reading above says the
+# board enumerated; this says a driver bound to its audio interfaces and left
+# nodes behind. The two fail differently and neither implies the other: a board
+# present with no card is a missing or unbound driver, and a card whose nodes the
+# application account cannot open is a rule that did not apply.
+#
+# Found by name, the way the application finds it — which means the same two
+# tolerances it has, and for the same reasons as the USB reading above. The names
+# are a preference list, because a board on the pre-update firmware presents the
+# module's own name and the USB assertion two lines up accepts exactly that board.
+# Both lines of a card's entry in /proc/asound/cards are searched, because which
+# of the two carries the marketing name has moved between firmware revisions and
+# the application searches both fields too. The index comes off the numbered line
+# of whichever entry matched, never assumed: index order is probe order.
+card=""
+card_name=""
+while IFS= read -r name; do
+	[ -n "$name" ] || continue
+	lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+	# shellcheck disable=SC2016  # this awk program runs on the device
+	card_probe=$(printf 'awk -v n=%s %s /proc/asound/cards' \
+		"$(dev_quote "$lower")" \
+		"$(dev_quote '$1 ~ /^[0-9]+$/ && $2 ~ /^\[/ { idx = $1 } idx != "" && index(tolower($0), n) { print idx; exit }')")
+	dev_capture "$card_probe"
+	case "$DEV_OUT" in
+		'' | *[!0-9]*) continue ;;
+		*)
+			card=$DEV_OUT
+			card_name=$name
+			break
+			;;
+	esac
+done <<<"$EXPECT_ALSA_CARD_NAMES"
+
+case "$card" in
+	'')
+		dev_capture 'cat /proc/asound/cards 2>&1'
+		t_fail "the audio board is bound as a sound card under one of its names" \
+			"looked for: $(printf '%s' "$EXPECT_ALSA_CARD_NAMES" | tr '\n' ' ')" \
+			"the cards the kernel is presenting:" \
+			"${DEV_OUT:-<none>}"
+		for direction in $EXPECT_ALSA_PCM_DIRECTIONS; do
+			t_fail "and its '${direction}' PCM node is reachable by its group" \
+				"not asserted: no card to look under"
+		done
+		;;
+	*)
+		# The name that matched is in the reading, so the transcript still records
+		# which firmware generation the board is on.
+		t_pass "the audio board is bound as a sound card under one of its names ('${card_name}', card ${card})"
+		# One assertion per direction, over every node the card exposes in it.
+		# `sort -u` collapses a card with several subdevices to the distinct
+		# modes actually in use, so a single loose node fails rather than
+		# averaging out.
+		for direction in $EXPECT_ALSA_PCM_DIRECTIONS; do
+			case "$direction" in
+				c) what=capture ;;
+				p) what=playback ;;
+				*) what=$direction ;;
+			esac
+			dev_capture "stat -c '%a %G' /dev/snd/pcmC${card}D*${direction} 2>/dev/null | sort -u"
+			if [ -z "$DEV_OUT" ]; then
+				t_fail "and its ${what} PCM node is reachable by its group" \
+					"no /dev/snd/pcmC${card}D*${direction} node exists"
+			else
+				t_eq "and its ${what} PCM node is reachable by its group" \
+					"$DEV_OUT" "${EXPECT_SND_NODE_MODE#0} ${EXPECT_SND_NODE_GROUP}"
+			fi
+		done
+		;;
+esac
+
 t_done

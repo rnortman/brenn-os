@@ -116,6 +116,15 @@ udev
 bluez-firmware
 firmware-brcm80211
 
+# The carrier's audio, declared by the reachy profile layer alongside the rules
+# that permission the same board's USB node. The mic array is a USB audio class
+# device and the application opens it through ALSA's own library; there is no
+# sound server, because the application is the card's only user. `libasound2` is
+# a virtual name in trixie, provided by libasound2t64, and libasound2-data — the
+# library's configuration files — is the whole of the closure it drags in.
+libasound2-data
+libasound2t64
+
 # The apt stack, retained deliberately. apt is how the build installs every
 # layer, so purging it after the fact would run maintainer scripts against a
 # half-dismantled package system for no gain: at runtime it can only act on a

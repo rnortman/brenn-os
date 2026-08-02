@@ -2,7 +2,8 @@
 # X-Env-Layer-Name: brenn-profile-reachy
 # X-Env-Layer-Category: profile
 # X-Env-Layer-Desc: Hardware configuration for the robot-base CM4 carrier:
-#  boot firmware config, kernel command line, device access rules.
+#  boot firmware config, kernel command line, device access rules, and the
+#  userspace library the carrier's audio board is reached through.
 # X-Env-Layer-Version: 1.0.0
 # X-Env-Layer-Requires: rpi-boot-firmware
 #
@@ -16,6 +17,23 @@
 # METAEND
 ---
 mmdebstrap:
+  # The carrier's mic-array board is a USB audio class device, and the
+  # application reaches it two ways: raw USB transfers for the chip's control
+  # plane, and ALSA for the audio itself. The rules file next to this one grants
+  # the first; this package is the second. It sits in the profile layer, with
+  # the rules, because it is this carrier's hardware that needs it and no other
+  # part of the system opens a sound card.
+  #
+  # No sound server. The application is the card's only user and opens `hw:`
+  # directly, so PulseAudio or PipeWire would add a daemon, a resampler and a
+  # second failure mode for nothing.
+  #
+  # `libasound2` is a virtual name in trixie; `libasound2t64` is the package
+  # that provides it. The library's configuration files come with it as
+  # libasound2-data, which is the whole of what this drags in.
+  packages:
+    - libasound2t64
+
   # Overwrites the generic boot firmware from upstream layers. These must
   # be the final /boot/firmware content: boot slots are populated from it.
   customize-hooks:
