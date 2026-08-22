@@ -36,8 +36,11 @@ these. They are what makes an image an appliance rather than a small server:
 - **Remote-first logging.** Logs stream off the device and are volatile locally,
   which is both a flash-wear measure and the only practical way to debug a
   fleet.
-- **Key-only SSH, no default credentials.** No listener other than sshd.
-  Nothing ships with a password.
+- **Key-only SSH, no default credentials.** No listener other than sshd and the
+  multicast-DNS responder, which answers only questions about the device itself
+  — its provisioned name and the reverse lookup of its own addresses — so that a
+  unit on a network the operator does not control can be reached at all. Nothing
+  ships with a password.
 - **Per-unit provisioning stays outside this repo.** Credentials, keys,
   endpoints, and unit identity are injected when a device is provisioned. They
   are never baked into an image and never live here.

@@ -35,6 +35,8 @@ for file in $EXPECT_LINK_FILES; do
 		t_eq "${link} takes an address by DHCP" "$(img_ini_value "$content" DHCP)" yes
 		t_eq "${link} counts towards being online" \
 			"$(img_ini_value "$content" RequiredForOnline)" yes
+		t_eq "${link} answers the device's own name" \
+			"$(img_ini_value "$content" MulticastDNS)" yes
 	else
 		t_fail "${link} is configured" "no ${networkdir}/${file}"
 	fi
@@ -121,14 +123,18 @@ else
 		"nothing at ${units}/${EXPECT_SUPPLICANT_MASKED}"
 fi
 
-# The resolver answers nothing. Both of these open a listener on every link,
-# and sshd is meant to be the only listener on the device.
+# The resolver answers one question about one host: this device's own name, over
+# multicast DNS. That is the only reachable listener besides sshd, and it is
+# there because a unit on a network the operator does not control has no other
+# handle. The other mechanism stays off — two of them is a second listener for
+# no capability, and the per-link setting above is worth nothing if the global
+# gate is shut.
 dropin=/etc/systemd/resolved.conf.d/10-brenn-quiet.conf
 if content=$(img_ext4_cat "$IMG_SPEC" "$dropin"); then
 	t_eq "link-local name resolution is off" "$(img_ini_value "$content" LLMNR)" no
-	t_eq "multicast DNS is off" "$(img_ini_value "$content" MulticastDNS)" no
+	t_eq "multicast DNS is on" "$(img_ini_value "$content" MulticastDNS)" yes
 else
-	t_fail "the resolver answers no queries" "no drop-in at ${dropin}"
+	t_fail "the resolver answers for the device's own name" "no drop-in at ${dropin}"
 fi
 
 # Wireless needs the regulatory database installed, and needs no country baked

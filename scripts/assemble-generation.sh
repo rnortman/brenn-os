@@ -308,10 +308,21 @@ fi
 
 # Anything but 1 would otherwise read as "the network is broadcast", so a
 # spelling of yes would quietly produce a unit that never finds a hidden one.
-case $WIFI_SCAN_SSID in
-	0 | 1) ;;
-	*) problem "WIFI_SCAN_SSID '${WIFI_SCAN_SSID}' is not 0 or 1; a network that does not broadcast its name needs 1" ;;
-esac
+# One rule, one message, for wherever the knob is written: the primary network's
+# unit.conf and each additional network's own file.
+scan_out=0
+scan_flag() {
+	# scan_flag <label> <value>
+	scan_out=$2
+	case $2 in
+		0 | 1) return ;;
+	esac
+	problem "${1} '${2}' is not 0 or 1; a network that does not broadcast its name needs 1"
+	scan_out=0
+}
+
+scan_flag WIFI_SCAN_SSID "$WIFI_SCAN_SSID"
+WIFI_SCAN_SSID=$scan_out
 
 # An address or a host name with a space or a newline in it renders into a drop-in
 # that means something else, or nothing at all, and the device is where that gets
@@ -386,6 +397,11 @@ chmod 0700 "$store_root" "$store" "$identity" "$inputs"
 # The operator's half of the store. Each entry is named with what it is for,
 # because the refusal below is the whole instruction for assembling a new unit.
 wifi_conf=${inputs}/wifi.conf
+wifi_d=${inputs}/wifi.d
+# The additional networks' pre-shared keys are secrets like every other input, so
+# the directory holding them is held to the store's mode on every run too. It is
+# not created here: an absent one means this unit has no additional networks.
+[ ! -d "$wifi_d" ] || chmod 0700 "$wifi_d"
 authorized_keys=${inputs}/authorized_keys
 ca_pem=${inputs}/brenn-ca.pem
 keyring_pem=${inputs}/rauc-keyring.pem
@@ -423,8 +439,58 @@ fi
 # trailing space would be part of it. Deliberately not the contract's
 # brenn_conf_value: that grammar ends by deleting every space in the value,
 # which would hash the right words against the wrong network name.
+# head -n1 is not a silent choice between two lines that set the same key: a file
+# that sets one twice is refused by wifi_lines_check below, so by the time a value
+# is read there is only one of it.
 wifi_value() {
 	sed -n "s/^[[:space:]]*${2}=//p" "$1" | head -n1
+}
+
+# Walk one network file line by line. Two things are refused here that nothing
+# further along would notice: a key set twice — the correction an operator makes
+# by adding a line rather than editing one, which would leave the old value in
+# force — and, where the caller names the keys it knows, a key this script does
+# not know. Both produce a generation that assembles, passes the contract check
+# and boots healthy on a network the unit never joins.
+#
+# The second argument is the space-separated list of known keys, or empty for a
+# file whose keys are not this script's to enumerate; then only duplicates are
+# refused and anything unrecognised is left alone.
+wifi_lines_check() {
+	local file=$1 known=$2 line line_no=0 stripped name seen="" entry first
+	while IFS= read -r line || [ -n "$line" ]; do
+		line_no=$((line_no + 1))
+		stripped=${line#"${line%%[![:space:]]*}"}
+		case $stripped in
+			'' | '#'*) continue ;;
+		esac
+		name=$(printf '%s' "$line" | sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)=.*$/\1/p')
+		if [ -z "$name" ]; then
+			[ -n "$known" ] || continue
+			problem "${file} line ${line_no} is not a KEY=value line; each line of a network file sets one of ${known}, or is blank, or begins with #"
+			continue
+		fi
+		if [ -n "$known" ]; then
+			case " ${known} " in
+				*" ${name} "*) ;;
+				*)
+					problem "${file} sets '${name}', which is not a key of a network file; the keys are: ${known}"
+					continue
+					;;
+			esac
+		fi
+		first=""
+		for entry in $seen; do
+			case $entry in
+				"${name}:"*) first=${entry#*:} ;;
+			esac
+		done
+		if [ -n "$first" ]; then
+			problem "${file} sets ${name} on line ${first} and again on line ${line_no}; only the first would be used, so say it once"
+		else
+			seen="${seen} ${name}:${line_no}"
+		fi
+	done <"$file"
 }
 
 byte_length() {
@@ -438,33 +504,146 @@ wifi_psk=""
 # twice would let the two decisions drift, and a hex key run through the
 # derivation yields a well-formed generation for a unit that never associates.
 wifi_psk_is_hex=0
-if [ -f "$wifi_conf" ]; then
-	wifi_ssid=$(wifi_value "$wifi_conf" SSID)
-	wifi_psk=$(wifi_value "$wifi_conf" PSK)
+
+# Validate one network file's credentials. Results come back in globals rather
+# than on stdout, because a refusal has to reach the run's problem count and a
+# command substitution would keep it in a subshell.
+wifi_out_ssid=""
+wifi_out_psk=""
+wifi_out_is_hex=0
+wifi_credentials() {
+	local file=$1 ssid psk ssid_bytes psk_bytes
+	ssid=$(wifi_value "$file" SSID)
+	psk=$(wifi_value "$file" PSK)
+	wifi_out_ssid=$ssid
+	wifi_out_psk=$psk
+	wifi_out_is_hex=0
 	# Everything the rendered configuration cannot carry is refused here, because
 	# nothing further along would notice: the supplicant file assembles, the
 	# contract check passes, and the unit boots healthy and never associates —
 	# which on this hardware is diagnosed by a teardown.
-	ssid_bytes=$(byte_length "$wifi_ssid")
-	if [ -z "$wifi_ssid" ]; then
-		problem "${wifi_conf} names no SSID="
+	ssid_bytes=$(byte_length "$ssid")
+	if [ -z "$ssid" ]; then
+		problem "${file} names no SSID="
 	elif [ "$ssid_bytes" -gt 32 ]; then
-		problem "the SSID in ${wifi_conf} is ${ssid_bytes} bytes; a network name is at most 32"
-	elif printf '%s' "$wifi_ssid" | LC_ALL=C grep -q '["[:cntrl:]]'; then
-		problem "the SSID in ${wifi_conf} holds a double quote or a control character, which a quoted ssid= cannot carry; a carriage return from a Windows editor is the usual cause"
+		problem "the SSID in ${file} is ${ssid_bytes} bytes; a network name is at most 32"
+	elif printf '%s' "$ssid" | LC_ALL=C grep -q '["[:cntrl:]]'; then
+		problem "the SSID in ${file} holds a double quote or a control character, which a quoted ssid= cannot carry; a carriage return from a Windows editor is the usual cause"
 	fi
-	psk_bytes=$(byte_length "$wifi_psk")
-	if [ -z "$wifi_psk" ]; then
-		problem "${wifi_conf} names no PSK="
-	elif printf '%s' "$wifi_psk" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+	psk_bytes=$(byte_length "$psk")
+	if [ -z "$psk" ]; then
+		problem "${file} names no PSK="
+	elif printf '%s' "$psk" | grep -Eq '^[0-9a-fA-F]{64}$'; then
 		# Already the pre-shared key itself; used as it stands.
-		wifi_psk_is_hex=1
+		wifi_out_is_hex=1
 	elif [ "$psk_bytes" -lt 8 ] || [ "$psk_bytes" -gt 63 ]; then
-		problem "the PSK in ${wifi_conf} is ${psk_bytes} bytes; a WPA passphrase is 8 to 63 of them, or give the key itself as 64 hex digits"
-	elif printf '%s' "$wifi_psk" | LC_ALL=C grep -q '[^ -~]'; then
-		problem "the PSK in ${wifi_conf} holds a byte outside printable ASCII, which a WPA passphrase may not; give the key itself as 64 hex digits instead"
+		problem "the PSK in ${file} is ${psk_bytes} bytes; a WPA passphrase is 8 to 63 of them, or give the key itself as 64 hex digits"
+	elif printf '%s' "$psk" | LC_ALL=C grep -q '[^ -~]'; then
+		problem "the PSK in ${file} holds a byte outside printable ASCII, which a WPA passphrase may not; give the key itself as 64 hex digits instead"
 	fi
+}
+
+if [ -f "$wifi_conf" ]; then
+	# No key list: wifi.conf's grammar predates this script's knowing all of its
+	# keys, so an unrecognised line here is left where it is. A key said twice is
+	# refused, because the reader would take the first one.
+	wifi_lines_check "$wifi_conf" ""
+	wifi_credentials "$wifi_conf"
+	wifi_ssid=$wifi_out_ssid
+	wifi_psk=$wifi_out_psk
+	wifi_psk_is_hex=$wifi_out_is_hex
 fi
+
+# The additional networks. wifi.conf stays the unit's primary one and keeps its
+# meaning; a unit that has to reach more than one network — a phone hotspot, a
+# visited house — gets one file per network here, and the supplicant chooses
+# among them itself. The directory is optional: a unit with none assembles
+# exactly what it assembled before there was one.
+wifi_d_keys="SSID PSK SCAN_SSID PRIORITY"
+wifi_d_files=()
+if [ -d "$wifi_d" ]; then
+	# find and sort rather than a glob, so the order is the C locale's and not
+	# the operator's — the rendered file is diffed between assemblies, and a
+	# collation that moved a block would read as a configuration change. Every
+	# entry is listed, not only the ones that look like network files, because a
+	# directory whose whole purpose is "these are the networks" may not skip one
+	# in silence: hotspot.txt, hotspot.conf.bak and a subdirectory are refused by
+	# name. A note may sit here under one of a few README names and nothing else.
+	#
+	# The listing is NUL-separated: a name holding a newline would otherwise
+	# arrive as two lines, and the name check below cannot protect a listing it
+	# runs after.
+	#
+	# It is taken in one step whose status is checked, rather than read straight
+	# from a process substitution whose status nothing sees: a listing that failed
+	# halfway — an I/O error on the medium the store sits on — would otherwise
+	# read as a shorter directory, which is the one silently skipped network this
+	# whole scan exists to prevent.
+	wifi_d_listing=$(mktemp) || die "could not create a temporary file"
+	trap 'rm -f -- "$wifi_d_listing"' EXIT
+	find "$wifi_d" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z >"$wifi_d_listing" ||
+		die "could not list ${wifi_d}; nothing was assembled"
+	while IFS= read -r -d '' f; do
+		base=${f##*/}
+		# Whether the entry is a network file is decided before whether it is a
+		# note, so that a name in the note list cannot swallow a network:
+		# README.conf is a legal network file name, and taking it for a note
+		# would drop a configured network without a word.
+		case $base in
+			*.conf) ;;
+			README | README.md | README.txt) continue ;;
+			*)
+				problem "${f} is in wifi.d/ and is not a network file; name a network file <name>.conf (or a note README, README.md or README.txt) and take anything else out of the directory"
+				continue
+				;;
+		esac
+		case $base in
+			*[!A-Za-z0-9._-]*)
+				problem "${f} is not a usable name for a network file; name it with letters, digits, dot, dash and underscore"
+				continue
+				;;
+		esac
+		# A symlink to a network file is one; anything that is not a file at all —
+		# a subdirectory named .conf, a dangling link — is said out loud rather
+		# than skipped.
+		if [ ! -f "$f" ]; then
+			problem "${f} is named as a network file and is not a readable file; one network is one file"
+			continue
+		fi
+		wifi_d_files+=("$f")
+	done <"$wifi_d_listing"
+	rm -f -- "$wifi_d_listing"
+	trap - EXIT
+fi
+
+# One record per network, tab-joined, rather than a set of index-aligned arrays:
+# a per-network key added later is a field in one place, and no loop has to be
+# kept in step with another by hand. A tab cannot appear in any field — the SSID
+# and PSK checks refuse control characters and non-printable bytes, and nothing
+# is rendered while a refusal stands.
+wifi_d_records=()
+for f in ${wifi_d_files+"${wifi_d_files[@]}"}; do
+	wifi_lines_check "$f" "$wifi_d_keys"
+	wifi_credentials "$f"
+
+	# Each additional network carries its own scan and priority: unit.conf's
+	# WIFI_SCAN_SSID is a statement about the primary network, and one hidden
+	# network does not make the others hidden.
+	scan=$(wifi_value "$f" SCAN_SSID)
+	[ -n "$scan" ] || scan=0
+	scan_flag "SCAN_SSID in ${f}" "$scan"
+	scan=$scan_out
+
+	# Absent renders no priority= line rather than a zero, so a file that says
+	# nothing about ranking leaves the supplicant's own default visible.
+	priority=$(wifi_value "$f" PRIORITY)
+	if [ -n "$priority" ] && ! printf '%s' "$priority" | grep -Eq '^-?[0-9]+$'; then
+		problem "PRIORITY '${priority}' in ${f} is not an integer; the supplicant prefers the highest of them"
+		priority=""
+	fi
+
+	wifi_d_records+=("${f}"$'\t'"${wifi_out_ssid}"$'\t'"${wifi_out_psk}"$'\t'"${wifi_out_is_hex}"$'\t'"${scan}"$'\t'"${priority}")
+done
 
 if [ -f "$authorized_keys" ]; then
 	grep -Eq '(^|[[:space:]])(ssh-|ecdsa-|sk-)' "$authorized_keys" ||
@@ -578,35 +757,70 @@ printf '%s\n' "$id" | text machine-id
 # workstation could read the one credential this assembly exists to protect. So
 # the passphrase goes down a pipe instead, and never appears in an argument list
 # or in a message.
-psk_line=""
-if [ "$wifi_psk_is_hex" = 1 ]; then
-	psk_line="psk=$(printf '%s' "$wifi_psk" | tr 'A-F' 'a-f')"
-else
+#
+# Every network's key is derived before anything is rendered, and the result
+# comes back in a global: a derivation that failed inside a command substitution
+# feeding the composition would take its message and its exit status with it, and
+# the file would be written with a line missing.
+wifi_psk_line=""
+psk_line_for() {
+	local file=$1 ssid=$2 psk=$3 is_hex=$4 psk_hex
+	if [ "$is_hex" = 1 ]; then
+		wifi_psk_line="psk=$(printf '%s' "$psk" | tr 'A-F' 'a-f')"
+		return
+	fi
 	command -v python3 >/dev/null 2>&1 ||
-		die "python3 is not installed; it derives the pre-shared key from the passphrase. Install it, or put the key itself as 64 hex digits in ${wifi_conf}"
-	psk_hex=$(printf '%s' "$wifi_psk" | python3 -c '
+		die "python3 is not installed; it derives the pre-shared key from the passphrase. Install it, or put the key itself as 64 hex digits in ${file}"
+	psk_hex=$(printf '%s' "$psk" | python3 -c '
 import hashlib, os, sys
 sys.stdout.write(
     hashlib.pbkdf2_hmac(
         "sha1", sys.stdin.buffer.read(), os.fsencode(sys.argv[1]), 4096, 32
     ).hex()
-)' "$wifi_ssid") || psk_hex=""
+)' "$ssid") || psk_hex=""
 	printf '%s' "$psk_hex" | grep -Eq '^[0-9a-f]{64}$' ||
-		die "no pre-shared key was derived from the credentials in ${wifi_conf}; check them, or put the key itself as 64 hex digits there"
-	psk_line="psk=${psk_hex}"
-fi
+		die "no pre-shared key was derived from the credentials in ${file}; check them, or put the key itself as 64 hex digits there"
+	wifi_psk_line="psk=${psk_hex}"
+}
+
+psk_line_for "$wifi_conf" "$wifi_ssid" "$wifi_psk" "$wifi_psk_is_hex"
+psk_line=$wifi_psk_line
+
+# The additional networks' keys, salted each with its own network name — the same
+# passphrase under two names is two different keys, so one derivation reused
+# across blocks would be a unit that associates with one of its networks.
+wifi_d_blocks=()
+for rec in ${wifi_d_records+"${wifi_d_records[@]}"}; do
+	IFS=$'\t' read -r rec_file rec_ssid rec_psk rec_is_hex rec_scan rec_priority \
+		<<<"$rec"
+	psk_line_for "$rec_file" "$rec_ssid" "$rec_psk" "$rec_is_hex"
+	wifi_d_blocks+=("${rec_ssid}"$'\t'"${wifi_psk_line}"$'\t'"${rec_scan}"$'\t'"${rec_priority}")
+done
+
+# One renderer for every network block, so a line the supplicant configuration
+# gains later — a key management or a WPA3 setting — cannot land on some of a
+# unit's networks and not the others. The primary network states no priority: it
+# is passed as one that is empty, rather than being a block this function cannot
+# write.
+render_network_block() {
+	# render_network_block <ssid> <psk line> <scan_ssid> <priority>
+	echo "network={"
+	printf '\tssid="%s"\n' "$1"
+	printf '\t%s\n' "$2"
+	[ "$3" != 1 ] || printf '\tscan_ssid=1\n'
+	[ -z "$4" ] || printf '\tpriority=%s\n' "$4"
+	echo "}"
+}
 
 {
 	echo "# wpa_supplicant configuration for wlan0. Assembled, not hand-edited."
 	echo "country=${WIFI_COUNTRY}"
 	echo "ctrl_interface=${WPA_CTRL_INTERFACE}"
-	echo "network={"
-	printf '\tssid="%s"\n' "$wifi_ssid"
-	printf '\t%s\n' "$psk_line"
-	if [ "$WIFI_SCAN_SSID" = 1 ]; then
-		printf '\tscan_ssid=1\n'
-	fi
-	echo "}"
+	render_network_block "$wifi_ssid" "$psk_line" "$WIFI_SCAN_SSID" ""
+	for block in ${wifi_d_blocks+"${wifi_d_blocks[@]}"}; do
+		IFS=$'\t' read -r b_ssid b_psk_line b_scan b_priority <<<"$block"
+		render_network_block "$b_ssid" "$b_psk_line" "$b_scan" "$b_priority"
+	done
 } | text net/wpa_supplicant-wlan0.conf
 
 if [ -n "$NTP_SERVER" ]; then

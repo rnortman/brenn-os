@@ -293,6 +293,7 @@ in it is created private.
 ```
 <store>/<unit>/
   inputs/wifi.conf              SSID= and PSK= (a passphrase, or 64 hex digits)
+  inputs/wifi.d/<name>.conf     optional; one more network per file
   inputs/authorized_keys        the public keys admitted to the device as root
   inputs/brenn-ca.pem           the HTTPS trust anchor, when an endpoint is configured
   inputs/rauc-keyring.pem       the certificate update bundles are verified against
@@ -359,6 +360,63 @@ and produce something that looks perfectly valid. What the rendered
 double quote or a control character, a passphrase outside 8 to 63
 printable-ASCII bytes. The escape hatch for anything else is to supply the
 pre-shared key itself, as 64 hex digits.
+
+#### More than one wireless network
+
+`inputs/wifi.conf` is the unit's primary network and stays required.
+`inputs/wifi.d/` is optional, and each `*.conf` file in it is one additional
+network the unit may join — a phone hotspot, a network at a place it is being
+taken to. The supplicant carries all of them and chooses: the highest
+`PRIORITY` among the networks in range, signal strength breaking a tie. The
+line grammar is `wifi.conf`'s, each value the whole rest of its line; blank
+lines and lines beginning with `#` are ignored.
+
+| Key | Content |
+|---|---|
+| `SSID` | Required. Same rules as `wifi.conf`: at most 32 bytes, no double quote, no control character. |
+| `PSK` | Required. Same rules: a passphrase of 8 to 63 printable-ASCII bytes, or the key itself as 64 hex digits. |
+| `SCAN_SSID` | `1` if this network does not broadcast its name, `0` otherwise (the default). Nothing else is accepted. `WIFI_SCAN_SSID` in `unit.conf` speaks for the primary network only. |
+| `PRIORITY` | An integer; the supplicant prefers the highest. Absent renders no `priority=` at all, which is the supplicant's own default of zero. |
+
+A key this table does not name is refused by name, and so is a line that sets
+nothing — a misspelled `PRIORITY` otherwise reads as a network the operator
+chose not to rank, which is a legal configuration nothing further along would
+question. A key set twice in one file is refused as well: only the first would
+be used, so correcting a passphrase means editing the line, not adding one.
+Every refusal names the file it came from, since a generation may now carry
+several networks. File names are letters, digits, dot, dash and underscore; the
+blocks render in the order those names sort, after the primary one, so two
+assemblies of the same inputs produce the same file. `wifi.conf` is held to the
+one-key-one-line rule too.
+
+Everything in the directory is accounted for: a note may sit there as `README`,
+`README.md` or `README.txt`, every other entry has to be a `<name>.conf` network
+file, and a backup copy, a renamed file or a subdirectory is refused rather than
+skipped. A skipped file is a network the operator believes is configured and the
+unit has never heard of — found, if at all, on the network the unit was taken
+to. A symlink to a network file is a network file. `README.conf` is a network
+file like any other, since `.conf` decides what an entry is before its name
+does.
+
+Two networks may carry the same `SSID`, here or between a `wifi.d` file and
+`wifi.conf`: two sets of credentials for one name is how a network that has been
+re-keyed, or one whose access points are configured separately, is joined, and
+the supplicant tries each block in turn. Nothing refuses it — which also means
+that adding a `wifi.d` file is not how a wrong passphrase in `wifi.conf` is
+corrected. That leaves both keys on the device, and which one is offered first
+is the supplicant's business. Correct the primary network by editing
+`wifi.conf`.
+
+The primary network claims no priority of its own. When the device may see two
+known networks at once, rank them — a unit that lands on the network the
+operator's laptop is *not* on is reachable by nobody, and that outcome is a
+configuration the operator did not state rather than a defect.
+
+What no assembly can check is whether credentials are *right*: a wrong
+passphrase for a real network assembles cleanly and is discovered only when that
+network is the only one in range. The trial-boot transaction does not catch it
+either, because the trial commits on whichever network the device is on at the
+time. Exercise a new network before depending on it.
 
 `inputs/brenn-ca.pem` is demanded exactly when the unit configures something
 that would read it, and the refusal names which value did. An anchor in the
@@ -431,3 +489,67 @@ certificate expires and every deployed device begins refusing every update. And
 putting a public *root* in the keyring would mean any holder of any certificate
 that authority ever issued could sign an operating system this device installs.
 The keyring has to be material the operator alone controls.
+
+## Reaching a unit on a network you do not control
+
+A unit on the operator's own network is reached by name because the DHCP lease
+registered that name with a DNS the operator runs. Take the same unit to a phone
+hotspot or to somebody else's house and that stops being true: the lease is in a
+table behind an admin page, and the address is knowable by nothing.
+
+So the device answers for itself over multicast DNS. From any machine on the
+same network:
+
+```
+ssh root@<hostname>.local
+```
+
+where `<hostname>` is the `UNIT_HOSTNAME` the generation carries. The device
+answers its own name and the reverse lookup of its own addresses, and advertises
+no service; it is the only listener on the device besides sshd.
+
+Nothing is needed on the device beyond a provisioned host name. What is needed
+on the machine doing the reaching is a resolver that routes `.local` to
+multicast DNS — `resolvectl mdns <iface>` reporting `yes` on a systemd-resolved
+laptop, or `avahi-daemon` with `nss-mdns` on a laptop that resolves names the
+older way. Modern desktop Linux ships one or the other configured.
+
+**Verify it at home, before it matters.** Resolve the unit's `.local` name from
+the machine you will be carrying, on the network you already control, while the
+unit is still on a bench you can reach another way. The check takes a minute and
+it is the whole difference between a mechanism and a hope; the network where it
+would first be needed is the network where nothing can be debugged.
+
+Then there is the failure this cannot survive: **AP client isolation**, where
+the access point forwards no traffic between its clients. Guest networks
+commonly do it; a phone hotspot and a typical home router do not. Isolation
+defeats multicast DNS, and equally defeats every other same-network trick —
+link-local addresses, a fixed private alias, a port scan. If the network a unit
+has been taken to isolates its clients, the answer is a hotspot the operator
+controls, not a cleverer protocol.
+
+### When the name does not resolve
+
+Every link holds an IPv6 link-local address the kernel assigned, with no
+responder and no lease involved. Knowing the radio's MAC (it is stable per unit
+and worth writing down at provisioning time alongside the host name):
+
+```
+ssh root@fe80::<eui64-of-mac>%<laptop-iface>
+```
+
+`<laptop-iface>` is the interface on the machine doing the reaching — a
+link-local address means nothing without it. If the unit's address-generation
+mode turns out not to be EUI-64, the neighbours announce themselves:
+
+```
+ping -6 ff02::1%<laptop-iface>
+ip -6 neigh show dev <laptop-iface>
+```
+
+This path needs nothing of the device at all, which also makes it the way to
+reach a unit whose image predates the responder.
+
+Last resort, and named as what it is: `nmap -p22 --open <subnet>` over whatever
+range the laptop's own lease came from finds a unit answering on 22 when the
+name and the link-local address have both failed.

@@ -129,8 +129,8 @@ else
 		"no link in multi-user.target.wants"
 fi
 
-# The same package ships a journal receiver and a journal gateway. Both listen,
-# and the only listener on this device is sshd.
+# The same package ships a journal receiver and a journal gateway. Both accept
+# connections, and no connection-accepting service but sshd is admitted.
 for masked in $EXPECT_UPLOAD_MASKED_UNITS; do
 	if target=$(img_ext4_link "$IMG_SPEC" "${units}/${masked}"); then
 		t_eq "${masked} is masked" "$target" /dev/null

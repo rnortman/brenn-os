@@ -185,6 +185,20 @@ new_gen
 printf 'country=US\n' >"${gen}/net/wpa_supplicant-wlan0.conf"
 t_eq "wireless credentials declaring no network are refused" "$(verdict)" refused
 
+# Multiple network blocks must be accepted, not just the single-block case: the
+# assembler produces them, and this check must not reject what it builds.
+new_gen
+{
+	printf 'country=US\n'
+	printf 'ctrl_interface=/run/wpa_supplicant\n'
+	printf 'network={\n\tssid="home"\n\tpsk=%064d\n}\n' 0
+	printf 'network={\n\tssid="hotspot"\n\tpsk=%064d\n\tpriority=10\n}\n' 1
+	printf 'network={\n\tssid="visited"\n\tpsk=%064d\n\tscan_ssid=1\n}\n' 2
+} >"${gen}/net/wpa_supplicant-wlan0.conf"
+chmod 0600 "${gen}/net/wpa_supplicant-wlan0.conf"
+t_eq "wireless credentials declaring three networks are accepted" \
+	"$(verdict)" accepted
+
 new_gen
 printf 'ssh-ed25519 AAAAfixture\n' >"${gen}/ssh/ssh_host_ed25519_key"
 t_eq "a host key that is not a private key is refused" "$(verdict)" refused

@@ -41,6 +41,22 @@ today; none of it has yet run on hardware.
   configuration's keys, the operator store's layout and what in it is generated
   once, where that store may live and what each choice costs, and the single
   `openssl` command that creates the update-signing keypair.
+- **More than one wireless network per unit.** A generation may carry the
+  network a unit lives on plus every other one it has to be able to join — a
+  phone hotspot, the wifi wherever it is being taken. One file per network in
+  the operator store's `inputs/wifi.d/`, each with its own key derivation, its
+  own hidden-network flag and its own priority, and the supplicant chooses
+  among them. Nothing on the device changed: it already accepted several
+  networks in a generation.
+- **A unit is findable on a network nobody here runs.** The device answers its
+  provisioned name over multicast DNS on both links, so a laptop on the same
+  phone hotspot or the same visited wifi reaches it as
+  `ssh root@<hostname>.local` with nothing configured on either side. It answers
+  only for itself and advertises no service; the charter's listener invariant is
+  amended to admit exactly that, and the device lane now censuses UDP sockets as
+  well as TCP so the exception cannot quietly grow. `docs/provisioning.md`
+  covers the pre-trip check, the one network layout that defeats this and every
+  alternative to it, and the IPv6 link-local fallback.
 - **Signed A/B OS updates.** `make bundle` packs a build into a RAUC bundle.
   Installing one writes the slot pair that is not running, which then gets
   exactly one boot to prove itself and rolls back on its own if it does not.
@@ -48,8 +64,8 @@ today; none of it has yet run on hardware.
   the provisioning generation is fetched over TLS into RAM, verified against its
   digest and run unprivileged, with a live resync and a development push loop
   that never touch flash. Contract: `docs/app-contract.md`.
-- **Appliance behaviour.** Key-only SSH and no other listener, no passwords
-  anywhere, logs shipped off the device, wired or wireless networking with a
+- **Appliance behaviour.** Key-only SSH with no listener beside it but the
+  name responder, no passwords anywhere, logs shipped off the device, wired or wireless networking with a
   network-set clock, an armed hardware watchdog, and no steady-state writes to
   the internal flash.
 - **Four test lanes**, in order of what they need: `make check` (no hardware),

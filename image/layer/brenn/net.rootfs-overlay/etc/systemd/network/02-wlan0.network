@@ -6,6 +6,11 @@ Name=wlan0
 
 [Network]
 DHCP=yes
+# The device answers its own name on this link too — it is the link a unit off
+# its own network is reached over. Stated per link as well as globally in the
+# resolver's configuration, because which way the default falls is a property of
+# how systemd was built.
+MulticastDNS=yes
 
 [DHCPv4]
 SendHostname=yes

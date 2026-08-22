@@ -6,6 +6,10 @@ Name=eth0
 
 [Network]
 DHCP=yes
+# The device answers its own name on this link. Stated per link as well as
+# globally in the resolver's configuration, because which way the default falls
+# is a property of how systemd was built.
+MulticastDNS=yes
 
 [DHCPv4]
 # The name the network registers is the provisioned one; it is set before this

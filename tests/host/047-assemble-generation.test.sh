@@ -231,8 +231,19 @@ t_eq "the store root itself is private" "$(mode_of "$store")" 700
 # repository is stronger and is the whole answer to git recording no modes: a
 # fresh clone's loose directories are taken back to 0700 by the next run, which
 # never created any of them. Loosen them and re-run.
+#
+# inputs/wifi.d is in the list because it holds pre-shared keys like the rest of
+# the store and is the one directory the assembly does not create: its chmod
+# stands alone, outside the list the other four are tightened in, and dropping it
+# leaves every additional network's passphrase readable by every account on the
+# workstation with nothing downstream any different.
+mkdir -p "${store}/reachy-test/inputs/wifi.d"
+{
+	echo "SSID=re-tightened"
+	echo "PSK=${passphrase}"
+} >"${store}/reachy-test/inputs/wifi.d/extra.conf"
 store_dirs=("$store" "${store}/reachy-test" "${store}/reachy-test/inputs"
-	"${store}/reachy-test/identity")
+	"${store}/reachy-test/inputs/wifi.d" "${store}/reachy-test/identity")
 chmod 0755 "${store_dirs[@]}"
 run -f reachy-test
 t_ok "a run against a loosened store succeeds" $? "$run_out"
@@ -634,6 +645,364 @@ run hidden
 t_ok "a hidden network assembles" $? "$run_out"
 t_has "the supplicant is told to scan for the name" \
 	"$(cat "${store}/hidden/generation/net/wpa_supplicant-wlan0.conf")" "scan_ssid=1"
+
+# Additional networks: inputs/wifi.d/<name>.conf, one file per network. The
+# directory is optional; assertions start with a unit that has none.
+
+supplicant_of() {
+	cat "${store}/${1}/generation/net/wpa_supplicant-wlan0.conf"
+}
+
+blocks_in() {
+	grep -c '^network={' "${store}/${1}/generation/net/wpa_supplicant-wlan0.conf"
+}
+
+nth_block() {
+	# nth_block <unit> <n> — the body of the nth network={…} block, braces
+	# excluded, so an assertion about one network cannot be satisfied by
+	# another's line.
+	awk -v want="$2" '
+		/^network=\{/ { n += 1; next }
+		/^\}/ { next }
+		n == want { print }
+	' "${store}/${1}/generation/net/wpa_supplicant-wlan0.conf"
+}
+
+write_unit no-extra
+fill_store no-extra
+run no-extra
+t_ok "a unit with no wifi.d assembles" $? "$run_out"
+t_eq "and renders exactly one network block" "$(blocks_in no-extra)" 1
+
+# The same unit with the directory present but empty, and with something in it
+# that is not a network file. Both have to produce the byte-identical output of
+# the case above: the directory is an addition, and a unit that has not used it
+# is a unit nothing changed for.
+write_unit empty-extra
+fill_store empty-extra
+mkdir -p "${store}/empty-extra/inputs/wifi.d"
+echo "these are the networks; add one file per network" \
+	>"${store}/empty-extra/inputs/wifi.d/README"
+run empty-extra
+t_ok "an empty wifi.d assembles" $? "$run_out"
+t_eq "and changes nothing about the supplicant configuration" \
+	"$(supplicant_of empty-extra)" "$(supplicant_of no-extra)"
+
+# Two additional networks, which is the configuration the feature exists for:
+# the hotspot ranked above everything, and a visited network that does not
+# broadcast its name.
+write_unit roaming
+fill_store roaming
+mkdir -p "${store}/roaming/inputs/wifi.d"
+{
+	echo "# the phone, preferred: it is where the laptop is"
+	echo ""
+	echo "SSID=phone-hotspot"
+	echo "PSK=${passphrase}"
+	echo "PRIORITY=10"
+} >"${store}/roaming/inputs/wifi.d/10-hotspot.conf"
+{
+	echo "SSID=visited-house"
+	echo "PSK=${passphrase}"
+	echo "SCAN_SSID=1"
+	echo "PRIORITY=-1"
+} >"${store}/roaming/inputs/wifi.d/20-visited.conf"
+run roaming
+t_ok "two additional networks assemble" $? "$run_out"
+t_eq "and render three network blocks" "$(blocks_in roaming)" 3
+
+# Order is the C locale's over the file names, so the rendered file is diffable
+# between assemblies rather than dependent on the operator's collation.
+t_has "the primary network stays first" "$(nth_block roaming 1)" 'ssid="test-network"'
+t_has "the first wifi.d file follows it" "$(nth_block roaming 2)" 'ssid="phone-hotspot"'
+t_has "then the second" "$(nth_block roaming 3)" 'ssid="visited-house"'
+
+# Every per-network value belongs to its own block. A scan or a priority that
+# leaked into another block is a unit that joins the wrong network, or never
+# finds the hidden one, and the file still looks well formed.
+t_has "the ranked network carries its priority" "$(nth_block roaming 2)" "priority=10"
+t_has "a negative priority renders as one" "$(nth_block roaming 3)" "priority=-1"
+t_lacks "the primary network claims no priority of its own" \
+	"$(nth_block roaming 1)" "priority="
+t_has "the hidden network is scanned for" "$(nth_block roaming 3)" "scan_ssid=1"
+t_lacks "and the broadcast one is not" "$(nth_block roaming 2)" "scan_ssid"
+t_lacks "nor is the primary" "$(nth_block roaming 1)" "scan_ssid"
+
+# A key is salted with its own network's name, so the one passphrase used for
+# all three blocks here has to come out as three different keys. One derivation
+# reused across blocks is a unit that associates with exactly one of its
+# networks and reports nothing about the others.
+roaming_psk_1=$(nth_block roaming 1 | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+roaming_psk_2=$(nth_block roaming 2 | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+roaming_psk_3=$(nth_block roaming 3 | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+t_eq "each block carries a derived key" \
+	"${#roaming_psk_1}${#roaming_psk_2}${#roaming_psk_3}" "646464"
+if [ "$roaming_psk_1" != "$roaming_psk_2" ] &&
+	[ "$roaming_psk_2" != "$roaming_psk_3" ] &&
+	[ "$roaming_psk_1" != "$roaming_psk_3" ]; then
+	t_pass "the same passphrase under three names is three different keys"
+else
+	t_fail "the same passphrase under three names is three different keys" \
+		"two blocks carry the same key"
+fi
+if command -v wpa_passphrase >/dev/null 2>&1; then
+	t_eq "and each is the key for that block's own name" \
+		"$roaming_psk_2" \
+		"$(wpa_passphrase "phone-hotspot" "$passphrase" |
+			sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')"
+else
+	echo "SKIP  the independent derivation for a wifi.d network: wpa_passphrase is not installed"
+fi
+t_lacks "no passphrase reaches the device" "$(supplicant_of roaming)" "$passphrase"
+
+# The escape hatch works per file too: a network whose key is given as 64 hex
+# digits is carried as it stands, not run through the derivation.
+write_unit extra-hex
+fill_store extra-hex
+extra_hex=$(printf 'extra-hex-psk-source' | sha256sum | cut -d' ' -f1)
+mkdir -p "${store}/extra-hex/inputs/wifi.d"
+{
+	echo "SSID=keyed-network"
+	echo "PSK=${extra_hex}"
+} >"${store}/extra-hex/inputs/wifi.d/keyed.conf"
+run extra-hex
+t_ok "a wifi.d network with a 64-hex key assembles" $? "$run_out"
+t_has "and the key is used as it stands" "$(nth_block extra-hex 2)" "psk=${extra_hex}"
+
+# The refusals. Each one is a network that would assemble, pass the contract
+# check and never associate — and with several networks in a generation, the
+# refusal has to say which file it is about or the operator is left comparing
+# them by hand.
+refuses_wifi_d() {
+	# refuses_wifi_d <desc> <unit> <expected fragment> <lines of the file...>
+	local desc=$1 unit=$2 want=$3
+	shift 3
+	write_unit "$unit"
+	fill_store "$unit"
+	mkdir -p "${store}/${unit}/inputs/wifi.d"
+	printf '%s\n' "$@" >"${store}/${unit}/inputs/wifi.d/30-extra.conf"
+	if run "$unit"; then
+		t_fail "$desc" "the run succeeded"
+		return
+	fi
+	t_has "$desc" "$run_out" "$want"
+	t_has "${desc}: the refusal names the file it came from" "$run_out" \
+		"wifi.d/30-extra.conf"
+	t_eq "${desc}: nothing was assembled" \
+		"$(exists "${store}/${unit}/generation")" absent
+}
+
+refuses_wifi_d "a wifi.d network name longer than 32 bytes is refused" \
+	long-extra-ssid "is at most 32" \
+	"SSID=abcdefghijklmnopqrstuvwxyz0123456789" "PSK=${passphrase}"
+refuses_wifi_d "a wifi.d network name holding a double quote is refused" \
+	quoted-extra-ssid "holds a double quote or a control character" \
+	'SSID=say "hello"' "PSK=${passphrase}"
+refuses_wifi_d "a wifi.d passphrase outside 8 to 63 bytes is refused" \
+	short-extra-psk "a WPA passphrase is 8 to 63" "SSID=network" "PSK=seven77"
+refuses_wifi_d "a wifi.d file naming no network is refused" \
+	no-extra-ssid "names no SSID=" "PSK=${passphrase}"
+refuses_wifi_d "a wifi.d file naming no key is refused" \
+	no-extra-psk "names no PSK=" "SSID=network"
+refuses_wifi_d "a misspelled key in a wifi.d file is refused by name" \
+	misspelled-extra "sets 'PRORITY'" \
+	"SSID=network" "PSK=${passphrase}" "PRORITY=10"
+refuses_wifi_d "a wifi.d SCAN_SSID that is not 0 or 1 is refused" \
+	yes-extra-scan "is not 0 or 1" \
+	"SSID=network" "PSK=${passphrase}" "SCAN_SSID=yes"
+refuses_wifi_d "a wifi.d priority that is not an integer is refused" \
+	worded-extra-priority "is not an integer" \
+	"SSID=network" "PSK=${passphrase}" "PRIORITY=high"
+refuses_wifi_d "a line in a wifi.d file that sets nothing is refused" \
+	prose-extra "is not a KEY=value line" \
+	"SSID=network" "PSK=${passphrase}" "the hotspot, remember to turn it on"
+
+# The file name is interpolated into refusals and sorted to decide the order the
+# blocks render in, so it is held to what reads and sorts unambiguously.
+write_unit spacey-extra
+fill_store spacey-extra
+mkdir -p "${store}/spacey-extra/inputs/wifi.d"
+{
+	echo "SSID=network"
+	echo "PSK=${passphrase}"
+} >"${store}/spacey-extra/inputs/wifi.d/the phone.conf"
+refused "a wifi.d file whose name is not usable as one is refused" spacey-extra
+t_has "and the refusal says what it is about the name" "$run_out" \
+	"is not a usable name for a network file"
+
+# A key said twice takes the first value and discards the rest, which is exactly
+# how an operator corrects a passphrase: by adding the new line rather than
+# editing the old one. Silently keeping the old one is a unit that never
+# associates on that network, found on the network it was taken to.
+refuses_wifi_d "a key set twice in a wifi.d file is refused" \
+	twice-extra "and again on line" \
+	"SSID=network" "PSK=${passphrase}" "PSK=a-corrected-passphrase"
+
+write_unit twice-primary
+fill_store twice-primary
+echo "PSK=a-corrected-passphrase" >>"${store}/twice-primary/inputs/wifi.conf"
+refused "a key set twice in wifi.conf is refused too" twice-primary
+t_has "and the refusal names both lines" "$run_out" "and again on line"
+
+# The directory's whole content is accounted for: an editor's backup, a renamed
+# file, a note that is not a README — each one is a network the operator believes
+# is configured and the unit knows nothing about, and a silent skip there is
+# discovered off-LAN.
+write_unit stray-extra
+fill_store stray-extra
+mkdir -p "${store}/stray-extra/inputs/wifi.d"
+{
+	echo "SSID=network"
+	echo "PSK=${passphrase}"
+} >"${store}/stray-extra/inputs/wifi.d/hotspot.conf.bak"
+refused "a file in wifi.d that is not a network file is refused" stray-extra
+t_has "and the refusal says what to name one" "$run_out" \
+	"is not a network file"
+
+# A symlink to a network file is a network file: the operator who keeps one
+# network's credentials in one place and links it in is doing nothing this
+# script has an opinion about.
+write_unit linked-extra
+fill_store linked-extra
+mkdir -p "${store}/linked-extra/inputs/wifi.d"
+{
+	echo "SSID=linked-network"
+	echo "PSK=${passphrase}"
+} >"${store}/linked-extra/inputs/elsewhere.conf"
+ln -s ../elsewhere.conf "${store}/linked-extra/inputs/wifi.d/linked.conf"
+run linked-extra
+t_ok "a wifi.d network reached through a symlink assembles" $? "$run_out"
+t_has "and renders the network it names" "$(nth_block linked-extra 2)" \
+	'ssid="linked-network"'
+
+# The other half of that rule: an entry named as a network file which is not a
+# readable file at all. Without the check the entry falls through to the
+# credential reader, whose sed on a directory yields nothing, and the operator is
+# told the directory "names no SSID=" — a misdiagnosis of a copied tree or a
+# broken link into a credential store, which is the mistake this scan is for.
+write_unit subdir-extra
+fill_store subdir-extra
+mkdir -p "${store}/subdir-extra/inputs/wifi.d/sub.conf"
+refused "a subdirectory named as a network file is refused" subdir-extra
+t_has "and the refusal says one network is one file" "$run_out" \
+	"is not a readable file"
+t_eq "and nothing was assembled" \
+	"$(exists "${store}/subdir-extra/generation")" absent
+
+write_unit dangling-extra
+fill_store dangling-extra
+mkdir -p "${store}/dangling-extra/inputs/wifi.d"
+ln -s ../nowhere.conf "${store}/dangling-extra/inputs/wifi.d/dangling.conf"
+refused "a dangling symlink named as a network file is refused" dangling-extra
+t_has "and the refusal says one network is one file" "$run_out" \
+	"is not a readable file"
+t_eq "and nothing was assembled" \
+	"$(exists "${store}/dangling-extra/generation")" absent
+
+# The order the blocks render in is the C locale's over the file names, not the
+# operator's collation: a run under en_US would put a.conf before B.conf, and the
+# rendered file would then diff as a configuration change between two assemblies
+# of the same inputs.
+write_unit collated
+fill_store collated
+mkdir -p "${store}/collated/inputs/wifi.d"
+{
+	echo "SSID=lowercase-a"
+	echo "PSK=${passphrase}"
+} >"${store}/collated/inputs/wifi.d/a.conf"
+{
+	echo "SSID=uppercase-B"
+	echo "PSK=${passphrase}"
+} >"${store}/collated/inputs/wifi.d/B.conf"
+run collated
+t_ok "two wifi.d files whose names collate differently assemble" $? "$run_out"
+t_has "the upper-case name sorts first, as the C locale has it" \
+	"$(nth_block collated 2)" 'ssid="uppercase-B"'
+t_has "and the lower-case one follows it" \
+	"$(nth_block collated 3)" 'ssid="lowercase-a"'
+
+# What is a note and what is a network is decided by .conf, not by the name: a
+# README.conf is a legal network file name, and a skip pattern that swallowed it
+# would drop a configured network in silence — the outcome the whole directory
+# scan exists to prevent.
+write_unit readme-conf
+fill_store readme-conf
+mkdir -p "${store}/readme-conf/inputs/wifi.d"
+{
+	echo "SSID=named-like-a-note"
+	echo "PSK=${passphrase}"
+} >"${store}/readme-conf/inputs/wifi.d/README.conf"
+echo "these are the networks" >"${store}/readme-conf/inputs/wifi.d/README.md"
+run readme-conf
+t_ok "a wifi.d file named README.conf assembles" $? "$run_out"
+t_eq "the note is still a note and the .conf is still a network" \
+	"$(blocks_in readme-conf)" 2
+t_has "and the network it names is rendered" "$(nth_block readme-conf 2)" \
+	'ssid="named-like-a-note"'
+
+# wifi.conf may carry keys this script does not know, so unrecognised keys and
+# bare lines are left where they are. Only the files this script does enumerate
+# are held to their key list; applying wifi.d's validation to wifi.conf would
+# refuse to assemble every existing store carrying a stray line.
+write_unit tolerant-primary
+fill_store tolerant-primary
+{
+	echo "SSID=test-network"
+	echo "PSK=${passphrase}"
+	echo "SOME_FUTURE_KEY=1"
+	echo "the guest network, ask before changing it"
+} >"${store}/tolerant-primary/inputs/wifi.conf"
+run tolerant-primary
+t_ok "wifi.conf tolerates a key this script does not know" $? "$run_out"
+t_has "and renders the network it names" "$(nth_block tolerant-primary 1)" \
+	'ssid="test-network"'
+
+# One run reports every bad network. The per-file naming exists because a
+# generation may carry several, and a refusal that stopped at the first one sends
+# the operator round the loop once per network — over a radio, from a house that
+# is not theirs.
+write_unit two-bad
+fill_store two-bad
+mkdir -p "${store}/two-bad/inputs/wifi.d"
+{
+	echo "SSID=first-bad"
+	echo "PSK=seven77"
+} >"${store}/two-bad/inputs/wifi.d/40-first.conf"
+{
+	echo "SSID=second-bad"
+} >"${store}/two-bad/inputs/wifi.d/50-second.conf"
+refused "two defective wifi.d files are both refused" two-bad
+t_has "the first file is named" "$run_out" "wifi.d/40-first.conf"
+t_has "the second file is named too" "$run_out" "wifi.d/50-second.conf"
+t_has "with the first one's own reason" "$run_out" "a WPA passphrase is 8 to 63"
+t_has "and the second one's" "$run_out" "names no PSK="
+
+# Two networks with one name is not refused: two sets of credentials for one
+# SSID is a re-keyed network, and the supplicant tries each block. Pinned here
+# so the behaviour cannot change by accident — and documented in
+# docs/provisioning.md as what it costs, since it is also what an operator gets
+# for "correcting" wifi.conf by adding a file instead of editing it.
+write_unit same-name
+fill_store same-name
+mkdir -p "${store}/same-name/inputs/wifi.d"
+{
+	echo "SSID=test-network"
+	echo "PSK=a-second-passphrase-2718281828"
+} >"${store}/same-name/inputs/wifi.d/rekeyed.conf"
+run same-name
+t_ok "a wifi.d network repeating the primary name assembles" $? "$run_out"
+t_eq "and renders both networks" "$(blocks_in same-name)" 2
+t_has "the primary block keeps the name" "$(nth_block same-name 1)" \
+	'ssid="test-network"'
+t_has "and so does the second" "$(nth_block same-name 2)" 'ssid="test-network"'
+same_name_1=$(nth_block same-name 1 | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+same_name_2=$(nth_block same-name 2 | sed -n 's/^[[:space:]]*psk=\([0-9a-f]\{64\}\)$/\1/p')
+if [ -n "$same_name_1" ] && [ "$same_name_1" != "$same_name_2" ]; then
+	t_pass "each carries its own key, so both credentials reach the device"
+else
+	t_fail "each carries its own key, so both credentials reach the device" \
+		"first:  '${same_name_1}'" "second: '${same_name_2}'"
+fi
 
 # Each of these is a value the rendered supplicant configuration cannot carry.
 # Refusing here is the whole point: the alternative is a file that parses as
