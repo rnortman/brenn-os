@@ -1,9 +1,10 @@
 # METABEGIN
 # X-Env-Layer-Name: brenn-app
 # X-Env-Layer-Category: base
-# X-Env-Layer-Desc: The application runner. Obtains a payload over HTTPS into
-#  RAM at boot, verifies it, and execs its entry point as an unprivileged
-#  account. Nothing about any particular application is here.
+# X-Env-Layer-Desc: The application runner. Obtains a payload into RAM at
+#  boot — fetched over HTTPS, or staged from an archive baked onto the
+#  persistent partition — verifies it, and execs its entry point as an
+#  unprivileged account. Nothing about any particular application is here.
 # X-Env-Layer-Version: 1.0.0
 # X-Env-Layer-Requires: brenn-health,
 #  brenn-provisioning,
@@ -18,14 +19,23 @@
 #
 # It lives in RAM. A dedicated, size-capped tmpfs holds the unpacked payloads,
 # so deploying a new one writes nothing to flash and a runaway payload fails
-# against its own mount rather than against the memory the system needs. The
-# consequence is deliberate: a device with no network has no application, and
-# converges on one the moment the network returns.
+# against its own mount rather than against the memory the system needs.
 #
-# Fetching is part of the health gate. A boot that cannot obtain a payload is
-# not a boot worth committing, so the gate this layer joins is what an update
-# and a configuration change are both judged by — and the retry that runs until
-# the deadman gives up is what keeps a brief outage from costing an update.
+# A payload reaches that store one of two ways at boot. By default it is
+# fetched: a device with no network has no application, and converges on one
+# the moment the network returns. A device an operator has baked holds the
+# payload's archive on the persistent partition instead — written once, by
+# `brenn-app-bake`, and only after the payload has passed the contract check
+# in RAM — and the stage unpacks it into the same store at every boot, with no
+# network at all. Reading that archive costs the flash nothing; only the bake
+# writes. Either way the tree that runs is in RAM, and development pushes and
+# resyncs replace it there without touching the baked archive.
+#
+# Obtaining a payload is part of the health gate. A boot that cannot is not a
+# boot worth committing, so the gate this layer joins is what an update and a
+# configuration change are both judged by — and the fetch's retry, which runs
+# until the deadman gives up, is what keeps a brief outage from costing an
+# update.
 #
 # Two host tools are needed to turn a URL into a directory and are here for no
 # other reason: curl speaks HTTPS against a private trust anchor, and zstd is

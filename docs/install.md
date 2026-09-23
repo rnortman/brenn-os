@@ -231,6 +231,10 @@ first one" in `docs/provisioning.md`.
 The device is now assembled-and-ready as far as the workstation is concerned.
 There is nothing else to write.
 
+A reflashed device is not baked: the flash replaced the persistent partition,
+baked application included. If it was baked, run `brenn-app-bake` again once it
+is up (`docs/app-contract.md`, "Deploying one").
+
 ## 5. First boot
 
 In this order:

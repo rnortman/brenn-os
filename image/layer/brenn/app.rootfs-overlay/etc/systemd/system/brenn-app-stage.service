@@ -1,0 +1,28 @@
+[Unit]
+Description=Materialise the baked application payload
+
+# A baked device keeps its payload on the persistent partition, and this is
+# what puts it in RAM and makes it current. The condition is the whole of the
+# decision between baked and fetched: the fetch unit carries its negation, and
+# both are evaluated only once the partition is mounted. A dangling link reads
+# as not baked, because the condition follows it.
+#
+# No network ordering: booting without one is what a baked device is for.
+RequiresMountsFor=/run/brenn-app /persistent
+ConditionPathExists=/data/baked/active
+
+# Obtaining a payload is part of a boot worth keeping, whichever door it came
+# in by. A baked payload that fails its digest fails the gate, and a trial
+# boot that cannot stage it reverts.
+Before=brenn-healthy.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# One attempt, no Restart=: the input is a local file, and one that fails its
+# digest will fail it again. The timeout is explicit because unpacking a large
+# archive from flash into RAM is the one slow step in a baked boot, and the
+# default would kill it on a payload that fits the store comfortably.
+ExecStart=/usr/lib/brenn/brenn-app-stage
+TimeoutStartSec=10min

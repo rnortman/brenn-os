@@ -2,7 +2,7 @@
 #
 # The application runner, as the image ships it.
 #
-# What the three programs do with a payload is asserted by running them, in
+# What the runner's programs do with a payload is asserted by running them, in
 # tests/host. What is left for an image to answer is everything around them:
 # that the payload lands in RAM and not on flash, that the entry point runs
 # unprivileged, that a boot which cannot obtain a payload cannot commit an
@@ -51,10 +51,17 @@ fi
 
 # --- the programs -------------------------------------------------------------
 
-for prog in "$EXPECT_APP_FETCH_EXEC" "$EXPECT_APP_ACTIVATE_EXEC" "$EXPECT_APP_RESYNC_EXEC"; do
+for prog in "$EXPECT_APP_FETCH_EXEC" "$EXPECT_APP_ACTIVATE_EXEC" "$EXPECT_APP_RESYNC_EXEC" \
+	"$EXPECT_APP_STAGE_EXEC" "$EXPECT_APP_BAKE_EXEC" "$EXPECT_APP_UNBAKE_EXEC"; do
 	t_eq "${prog} is installed" "$(img_ext4_type "$IMG_SPEC" "$prog")" regular
 	t_eq "${prog} is executable" "$(img_ext4_mode "$IMG_SPEC" "$prog")" 755
+	t_eq "${prog} is beside the fetch" "$(dirname "$prog")" "$(dirname "$EXPECT_APP_FETCH_EXEC")"
 done
+
+t_eq "the payload library is installed" "$(img_ext4_type "$IMG_SPEC" "$EXPECT_APP_LIB")" regular
+t_eq "and is a library, not a program" "$(img_ext4_mode "$IMG_SPEC" "$EXPECT_APP_LIB")" 644
+t_eq "beside the programs that source it" \
+	"$(dirname "$EXPECT_APP_LIB")" "$(dirname "$EXPECT_APP_FETCH_EXEC")"
 
 # The programs find each other by their own directory, so an operator's copy
 # runs its own siblings; that only resolves on a device if they are installed
@@ -111,8 +118,18 @@ if content=$(img_ext4_cat "$IMG_SPEC" "$fetch"); then
 	t_eq "and no start limit ever ends the retry" \
 		"$(img_ini_value "$content" StartLimitIntervalSec)" "$EXPECT_APP_FETCH_START_LIMIT"
 
-	t_eq "the store is mounted before the fetch writes to it" \
-		"$(img_ini_value "$content" RequiresMountsFor)" "$EXPECT_APP_DIR"
+	# The store, before the fetch writes to it, and the persistent
+	# partition, before the baked condition is read from it.
+	mounts=$(img_ini_values "$content" RequiresMountsFor | tr ' ' '\n')
+	for mnt in $EXPECT_APP_OBTAIN_MOUNTS; do
+		t_contains "${mnt} is mounted before the fetch runs" "$mounts" "$mnt"
+	done
+
+	# Offline autonomy is what baking is for, so a baked device does not
+	# fetch at boot even when its generation names a payload.
+	t_contains "the fetch is skipped on a baked device" \
+		"$(img_ini_values "$content" ConditionPathExists | tr ' ' '\n')" \
+		"$EXPECT_APP_FETCH_BAKED_CONDITION"
 else
 	t_fail "the fetch is installed" "no unit at ${fetch}"
 fi
@@ -126,6 +143,39 @@ if link=$(img_ext4_link "$IMG_SPEC" "$requires"); then
 		"$link" "../${EXPECT_APP_FETCH_UNIT}"
 else
 	t_fail "a boot with no payload does not reach the health gate" \
+		"nothing at ${requires}"
+fi
+
+# The baked door: the payload on the persistent partition, staged into RAM.
+stage="${units}/${EXPECT_APP_STAGE_UNIT}"
+if content=$(img_ext4_cat "$IMG_SPEC" "$stage"); then
+	t_eq "the stage runs the runner's own program" \
+		"$(img_ini_value "$content" ExecStart)" "$EXPECT_APP_STAGE_EXEC"
+	t_contains "the stage runs only on a baked device" \
+		"$(img_ini_values "$content" ConditionPathExists | tr ' ' '\n')" \
+		"$EXPECT_APP_BAKED_CONDITION"
+	mounts=$(img_ini_values "$content" RequiresMountsFor | tr ' ' '\n')
+	for mnt in $EXPECT_APP_OBTAIN_MOUNTS; do
+		t_contains "${mnt} is mounted before the stage runs" "$mounts" "$mnt"
+	done
+	t_contains "the stage is part of what the health gate waits for" \
+		"$(img_ini_values "$content" Before | tr ' ' '\n')" "$EXPECT_APP_FETCH_BEFORE"
+	t_eq "the stage has time to unpack a large payload from flash" \
+		"$(img_ini_value "$content" TimeoutStartSec)" "$EXPECT_APP_STAGE_TIMEOUT"
+
+	# A store that fails its digest fails it again; retrying would only
+	# hide the failure the gate is meant to see.
+	t_eq "the stage is one attempt" "$(img_ini_values "$content" Restart)" ""
+else
+	t_fail "the stage is installed" "no unit at ${stage}"
+fi
+
+requires="${units}/${EXPECT_APP_FETCH_BEFORE}.requires/${EXPECT_APP_STAGE_UNIT}"
+if link=$(img_ext4_link "$IMG_SPEC" "$requires"); then
+	t_eq "a baked boot that cannot stage its payload does not reach the health gate" \
+		"$link" "../${EXPECT_APP_STAGE_UNIT}"
+else
+	t_fail "a baked boot that cannot stage its payload does not reach the health gate" \
 		"nothing at ${requires}"
 fi
 
@@ -166,8 +216,18 @@ if content=$(img_ext4_cat "$IMG_SPEC" "$app"); then
 	t_contains "nothing runs until a payload is current" \
 		"$(img_ini_values "$content" ConditionPathExists | tr ' ' '\n')" \
 		"${EXPECT_APP_EXEC}"
-	t_contains "and it is the fetch that makes one current" \
-		"$(img_ini_values "$content" Requires | tr ' ' '\n')" "$EXPECT_APP_FETCH_UNIT"
+
+	# Neither door is pulled in or waited for by the application. A pull
+	# would re-read the doors' conditions on every restart and could stage
+	# or fetch over whatever an operator put in place; an ordering would hold
+	# an offline baked boot behind a fetch waiting for the network. The
+	# health gate pulls both in, and the activation's restart starts this.
+	for key in Requires Wants After; do
+		deps=$(img_ini_values "$content" "$key" | tr ' ' '\n')
+		for unit in "$EXPECT_APP_FETCH_UNIT" "$EXPECT_APP_STAGE_UNIT"; do
+			t_lacks "the application's ${key}= does not name ${unit}" "$deps" "$unit"
+		done
+	done
 else
 	t_fail "the application unit is installed" "no unit at ${app}"
 fi
@@ -215,8 +275,9 @@ done
 # nothing is the green result that checked nothing, and this is the only thing
 # in the app layer looking for an address.
 offenders=""
-for path in "$mount_unit" "$fetch" "$app" "$EXPECT_APP_FETCH_EXEC" \
-	"$EXPECT_APP_ACTIVATE_EXEC" "$EXPECT_APP_RESYNC_EXEC"; do
+for path in "$mount_unit" "$fetch" "$stage" "$app" "$EXPECT_APP_FETCH_EXEC" \
+	"$EXPECT_APP_ACTIVATE_EXEC" "$EXPECT_APP_RESYNC_EXEC" "$EXPECT_APP_STAGE_EXEC" \
+	"$EXPECT_APP_BAKE_EXEC" "$EXPECT_APP_UNBAKE_EXEC" "$EXPECT_APP_LIB"; do
 	if ! content=$(img_ext4_cat "$IMG_SPEC" "$path"); then
 		t_fail "no application server is named in ${path}" "it could not be read"
 		continue

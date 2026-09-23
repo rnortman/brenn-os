@@ -261,10 +261,13 @@ does not require touching a device.
 
 An application payload is trusted because it arrived over TLS from a server the
 device trusts and matched the digest the device was provisioned with
-(`image/layer/brenn/app.rootfs-overlay/usr/lib/brenn/brenn-app-fetch`). A digest
+(`image/layer/brenn/app.rootfs-overlay/usr/lib/brenn/brenn-app-fetch`). A baked
+payload is trusted because root wrote it to the device over SSH
+(`image/layer/brenn/app.rootfs-overlay/usr/lib/brenn/brenn-app-bake`), and is
+checked at every boot only against the digest stored beside it. A digest
 answers for exactly one payload, so every release is also a configuration
 change; a detached signature over the payload would answer for every release a
-publisher ever issues.
+publisher ever issues, fetched or baked.
 
 Deferred because the trust model it would replace is sound for the deployment
 this is being brought up on, and because the signing side of it belongs with the

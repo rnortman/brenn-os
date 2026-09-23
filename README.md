@@ -85,7 +85,9 @@ the built image and against temporary trees, not against a device.
   `docs/update.md`.
 - **Applications.** The payload is fetched over HTTPS into a memory-backed
   filesystem at boot, verified, and exec'd unprivileged, with a live resync and
-  a development push loop that never touch flash (`docs/app-contract.md`).
+  a development push loop that never touch flash (`docs/app-contract.md`). A
+  device can also be baked: one deliberate write puts a payload's archive on the
+  persistent partition, and every boot after that runs it with no network.
 - **CI** builds the image, asserts against it, and round-trips a bundle with a
   key it generates and throws away.
 

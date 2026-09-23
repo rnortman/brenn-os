@@ -1,0 +1,80 @@
+#!/bin/sh
+#
+# Make the baked application payload the current one.
+#
+#   brenn-app-stage
+#
+# A baked device keeps its payload on the persistent partition as the archive
+# it was baked from, and runs it from RAM like any other: at boot this unpacks
+# the archive into the payload store and activates it, which is the only thing
+# a baked boot does differently from a fetched one. Run by hand, it is how an
+# operator returns to the baked application after running something else,
+# without a reboot.
+#
+# The stored digest is checked every time, so flash that has rotted or been
+# tampered with is refused rather than executed. There is no retry: the input
+# is a local file, and a store that fails its digest will fail it again.
+
+set -eu
+
+here=$(dirname -- "$(readlink -f -- "$0")")
+
+brenn_app_activate=${BRENN_APP_ACTIVATE:-${here}/brenn-app-activate}
+app_lib=${BRENN_APP_LIB:-${here}/brenn-app-lib.sh}
+
+die() {
+	echo "brenn-app-stage: $*" >&2
+	exit 1
+}
+
+if [ $# -ne 0 ]; then
+	echo "usage: $(basename -- "$0")" >&2
+	exit 2
+fi
+
+[ -r "$app_lib" ] || die "no payload library at ${app_lib}"
+# shellcheck source=brenn-app-lib.sh
+. "$app_lib"
+
+app_dir=$brenn_app_dir
+baked=$brenn_baked_dir
+
+[ -d "${app_dir}/releases" ] || die "no payload store at ${app_dir}/releases"
+
+# The store is written by a bake and removed by an unbake, both under this
+# lock, and the RAM store's other writers take it too.
+brenn_app_lock || exit 1
+brenn_app_sweep
+
+brenn_app_baked_active || die "not in baked mode: ${baked}/active does not name a release"
+
+name=$(basename -- "$(readlink -f -- "${baked}/active")")
+archive="${baked}/active/payload.tar"
+stored="${baked}/active/sha256"
+
+[ -f "$archive" ] || die "the baked release ${name} has no payload.tar"
+[ -f "$stored" ] || die "the baked release ${name} has no sha256"
+
+expected=$(tr -d '[:space:]' <"$stored")
+computed=$(brenn_app_digest "$archive")
+[ "$computed" = "$expected" ] ||
+	die "digest mismatch in the baked release ${name}: expected ${expected}, got ${computed}"
+
+dir="${app_dir}/releases/${name}"
+
+# Already running it — straight after a bake, or after the application was
+# stopped by hand. Nothing is unpacked and nothing is restarted: the payload is
+# in RAM, and `systemctl start brenn-app.service` is what runs it again.
+if [ "$(readlink -- "${app_dir}/current" 2>/dev/null || :)" = "releases/${name}" ] && [ -d "$dir" ]; then
+	brenn_app_note "${name} is already current"
+	exit 0
+fi
+
+# A tree by this name that is not current is one nothing runs: the activate
+# step prunes every tree but the current one, so this is only what a stage
+# killed between unpacking and activating leaves behind.
+if [ -e "$dir" ]; then
+	rm -rf -- "$dir"
+fi
+
+brenn_app_install "$archive" "$name" || die "the baked payload ${name} could not be staged"

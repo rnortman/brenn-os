@@ -12,6 +12,13 @@ Wants=network-online.target
 After=network-online.target time-sync.target brenn-config-select.service
 ConditionPathExists=/run/brenn/provisioning/app/fetch.conf
 
+# A baked device runs the payload on its own flash and does not fetch at boot,
+# even when its generation names a payload server: offline autonomy is what
+# baking is for. The mount is required so the condition is read from the
+# partition and not from the empty directory beneath it.
+RequiresMountsFor=/persistent
+ConditionPathExists=!/data/baked/active
+
 # The gate that decides whether a boot is worth keeping includes having got a
 # payload. A boot that cannot reach the application server is a boot that
 # cannot be given the application, so an update or a configuration change

@@ -1,0 +1,56 @@
+#!/bin/sh
+#
+# Stop being a baked device.
+#
+#   brenn-app-unbake
+#
+# Removes the baked store's selecting link and every release under it. The
+# application that is running keeps running; what changes is the next boot,
+# which fetches if the provisioning generation names a payload and otherwise
+# runs no application at all. Nothing is fetched now — `brenn-app-resync` is
+# the command for that.
+
+set -eu
+
+here=$(dirname -- "$(readlink -f -- "$0")")
+
+app_lib=${BRENN_APP_LIB:-${here}/brenn-app-lib.sh}
+config_lib=${BRENN_CONFIG_LIB:-${here}/brenn-config-lib.sh}
+
+die() {
+	echo "brenn-app-unbake: $*" >&2
+	exit 1
+}
+
+if [ $# -ne 0 ]; then
+	echo "usage: $(basename -- "$0")" >&2
+	exit 2
+fi
+
+[ -r "$app_lib" ] || die "no payload library at ${app_lib}"
+# shellcheck source=brenn-app-lib.sh
+. "$app_lib"
+
+[ -r "$config_lib" ] || die "no provisioning contract library at ${config_lib}"
+# shellcheck source=../../../../provisioning.rootfs-overlay/usr/lib/brenn/brenn-config-lib.sh
+. "$config_lib"
+
+baked=$brenn_baked_dir
+store="${baked}/releases"
+
+[ -d "$brenn_app_dir" ] || die "no payload store at ${brenn_app_dir}"
+
+brenn_app_lock || exit 1
+
+# The link first: once it is gone the device is not baked, whatever the
+# releases below it still hold when the power goes.
+rm -f -- "${baked}/active" "${baked}/active.new"
+brenn_flush "$baked"
+
+for old in "${store}"/*; do
+	[ -e "$old" ] || continue
+	rm -rf -- "$old"
+done
+brenn_flush "$store"
+
+echo "brenn-app-unbake: the device is no longer baked; the running application is unchanged"

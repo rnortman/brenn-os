@@ -1,0 +1,144 @@
+#!/bin/sh
+#
+# Burn an application payload onto the device as the one it runs at boot.
+#
+#   ssh root@<unit> brenn-app-bake < payload.tar.zst
+#
+# A baked device needs no network and no operator to run its application: the
+# archive lives on the persistent partition and is staged into RAM at every
+# boot. Baking is a write to flash, so it is meant to be rare and deliberate,
+# and it is done in an order that keeps a bad payload off the flash entirely:
+# the archive is unpacked and activated in RAM first — so it is running, and
+# has passed the contract check, before anything is burned — and only then
+# copied to the store.
+#
+# The archive is stored exactly as delivered, so the bytes and the digest on
+# flash are the ones the operator can compute on the workstation.
+
+set -eu
+
+here=$(dirname -- "$(readlink -f -- "$0")")
+
+brenn_app_activate=${BRENN_APP_ACTIVATE:-${here}/brenn-app-activate}
+app_lib=${BRENN_APP_LIB:-${here}/brenn-app-lib.sh}
+config_lib=${BRENN_CONFIG_LIB:-${here}/brenn-config-lib.sh}
+
+die() {
+	echo "brenn-app-bake: $*" >&2
+	exit 1
+}
+
+usage() {
+	echo "usage: $(basename -- "$0") < payload-archive" >&2
+	exit 2
+}
+
+[ $# -eq 0 ] || usage
+
+# The payload arrives on stdin. A terminal there is somebody who forgot the
+# redirect, and would otherwise be left typing into a program that burns
+# whatever it reads.
+[ ! -t 0 ] || usage
+
+[ -r "$app_lib" ] || die "no payload library at ${app_lib}"
+# shellcheck source=brenn-app-lib.sh
+. "$app_lib"
+
+[ -r "$config_lib" ] || die "no provisioning contract library at ${config_lib}"
+# shellcheck source=../../../../provisioning.rootfs-overlay/usr/lib/brenn/brenn-config-lib.sh
+. "$config_lib"
+
+app_dir=$brenn_app_dir
+baked=$brenn_baked_dir
+store="${baked}/releases"
+tmp="${app_dir}/.bake.$$"
+
+[ -d "${app_dir}/releases" ] || die "no payload store at ${app_dir}/releases"
+
+# One lock for both stores, held from the sweep to the prune. Everything that
+# writes either store already takes it, and a second lock would be a second
+# ordering to get right. Holding it while stdin streams keeps every other
+# writer out for the length of the upload, as a fetch's download does.
+brenn_app_lock || exit 1
+
+# shellcheck disable=SC2016  # expanded when the program exits
+brenn_app_on_exit 'rm -f -- "$tmp"'
+
+# What an interrupted bake left: an upload in RAM, and a release on flash that
+# never got its final name. Nothing selects either, and the lock says nobody
+# is still writing them.
+brenn_app_sweep
+rm -rf -- "${store}"/*.new
+
+cat >"$tmp" || die "could not receive the payload into ${tmp}"
+
+# An upload cut short ends in an EOF like a complete one, and a plain tar
+# stream cut at a member boundary unpacks without complaint. A compressed
+# stream carries its own end, so a short one fails the unpack below instead of
+# being burned as the payload.
+case "$(head -c 6 -- "$tmp" | od -An -tx1 | tr -d ' \n')" in
+	1f8b*) ;;
+	fd377a585a00) ;;
+	28b52ffd*) ;;
+	*) die "the payload is not a gzip, xz or zstd archive; a bake takes only a compressed one, so that an upload cut short is refused rather than baked" ;;
+esac
+
+# TODO(app-payload-signing): the digest stored here is computed from what
+# arrived, so it answers for the flash, not for the publisher; a signature
+# would be checked here and again at every stage.
+digest=$(brenn_app_digest "$tmp")
+id=$(brenn_app_release_id baked)
+
+# A payload that fails here has touched nothing on flash, and whatever was
+# running keeps running.
+brenn_app_install "$tmp" "$id" || die "the payload was not installed; nothing was baked"
+
+# From here on the payload is running from RAM, and every failure says what
+# the store on flash holds. Each step that the next one relies on being on
+# flash is flushed with a bare `sync`, whose failure is the only report of a
+# write the device could not complete; brenn_flush swallows it.
+
+# Written under a name nothing selects, flushed, and only then given its real
+# one, so that a power cut leaves either no release or a complete one.
+new="${store}/${id}.new"
+if ! {
+	mkdir -- "$new" &&
+		cp -- "$tmp" "${new}/payload.tar" &&
+		printf '%s\n' "$digest" >"${new}/sha256" &&
+		sync -- "${new}/payload.tar" "${new}/sha256" "$new" &&
+		mv -T -- "$new" "${store}/${id}" &&
+		sync -- "$store"
+}; then
+	rm -rf -- "$new" "${store}/${id:?}" || :
+	brenn_flush "$store"
+	die "${id} is running, but could not be written to ${store}; it is not baked"
+fi
+
+# The selecting link, swapped the same way `current` is, so that `active`
+# always names either the old release or the new one.
+if ! {
+	ln -sfn "releases/${id}" "${baked}/active.new" &&
+		mv -T -- "${baked}/active.new" "${baked}/active"
+}; then
+	rm -rf -- "${baked}/active.new" "${store}/${id:?}" || :
+	brenn_flush "$store"
+	die "${id} is running, but ${baked}/active could not be switched to it; it is not baked, and the baked release before it is still the one a boot runs"
+fi
+
+# Until the link is on flash a power cut may bring back the one it replaced,
+# so the releases it may name are all kept.
+if ! sync -- "$baked"; then
+	die "${id} is running and ${baked}/active names it, but the link could not be flushed; the baked release before it is kept, and a boot runs whichever of the two the link names"
+fi
+
+# One baked release at a time: the one just made active. The bake has
+# succeeded by now, so an old release that will not go is left for the next
+# bake to remove.
+for old in "${store}"/*; do
+	[ -e "$old" ] || continue
+	[ "$old" != "${store}/${id}" ] || continue
+	rm -rf -- "$old" || brenn_app_note "could not remove the old release ${old}; the next bake removes it"
+done
+brenn_flush "$store"
+
+echo "brenn-app-bake: baked ${id} (sha256 ${digest})"

@@ -5,10 +5,11 @@
 #   brenn-app-activate <release-directory>
 #
 # Every way a payload can arrive ends here: the boot-time fetch, an operator
-# asking for a resync, and a tree pushed straight into the store from a
-# workstation during development. One choke point means the contract is checked
-# once, the switch is the same rename in all three cases, and there is one
-# place to look when what is running is not what was expected.
+# asking for a resync, the baked payload staged from flash or being baked, and
+# a tree pushed straight into the store from a workstation during development.
+# One choke point means the contract is checked once, the switch is the same
+# rename in every case, and there is one place to look when what is running is
+# not what was expected.
 #
 # The switch itself is a symlink rename, which is atomic: at no point does
 # `current` name something incomplete, and nothing has to be stopped first.
@@ -79,9 +80,11 @@ echo "brenn-app-activate: activated ${name}"
 
 # The flip has already happened, so a service manager that cannot be reached is
 # reported rather than treated as a failed activation: what is current is
-# current, and the unit's own dependencies start it on the next attempt. Saying
-# so matters most to the operator who ran a resync and would otherwise conclude
-# the new payload is running.
+# current. Nothing else starts the application onto it — only the next
+# activation's restart, a Restart= of one already running, or a reboot — so
+# the failure is reported rather than swallowed. Saying so matters most to the
+# operator who ran a resync and would otherwise conclude the new payload is
+# running.
 # shellcheck disable=SC2086  # the command is a word list, and overridable
 if ! $restart_cmd; then
 	echo "brenn-app-activate: ${name} is current, but the application could not be restarted" >&2

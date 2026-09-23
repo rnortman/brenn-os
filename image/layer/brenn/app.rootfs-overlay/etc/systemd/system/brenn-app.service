@@ -1,8 +1,24 @@
 [Unit]
 Description=Application payload
 
-Requires=brenn-app-fetch.service
-After=brenn-app-fetch.service
+# Neither door a payload comes in by — the fetch or the baked stage — is
+# required by or ordered before this unit, and that is deliberate.
+#
+# Required, either one would be started again by every start of this unit —
+# each activation's restart and each Restart= — because a unit its condition
+# skipped is left inactive, and its condition re-read. Baking and unbaking flip
+# those conditions at run time, so a restart could stage the baked payload back
+# over a pushed one, or fetch over a baked one. Wants= does the same.
+#
+# Ordered after the fetch, this unit would wait for a start job that itself
+# waits for the network: on an offline baked boot, the wait-online timeout for
+# a unit whose only act is to be skipped, and after a bake, a fetch's retry
+# loop in flight.
+#
+# The health gate is what pulls both obtaining units into every boot, and the
+# activate step's restart is what starts this one on each new payload. At boot
+# the condition below does the ordering: a start before any payload is current
+# is skipped, and the activation's restart follows.
 ConditionPathExists=/run/brenn-app/current/run
 
 StartLimitIntervalSec=0

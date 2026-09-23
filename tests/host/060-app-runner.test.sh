@@ -29,6 +29,8 @@ resync="${overlay}/brenn-app-resync"
 # that owns it.
 config_lib="${BRENN_REPO_ROOT}/image/layer/brenn/provisioning.rootfs-overlay/usr/lib/brenn/brenn-config-lib.sh"
 
+app_lib="${overlay}/brenn-app-lib.sh"
+
 for bin in "$fetch" "$activate" "$resync"; do
 	if [ ! -x "$bin" ]; then
 		t_fail "the app-runner's programs are present and executable" "not at ${bin}"
@@ -45,6 +47,7 @@ trap 'rm -rf "$work"' EXIT
 
 app_dir="${work}/run/brenn-app"
 link="${work}/run/brenn/provisioning"
+baked_dir="${work}/data/baked"
 served="${work}/served.tar.gz"
 restarts="${work}/restarts"
 
@@ -105,8 +108,8 @@ make_curl() {
 setup() {
 	local url=${1:-https://payload.example.internal/payload.tar.gz}
 	local digest=${2:-$(digest_of "$served")}
-	rm -rf "${work}/run"
-	mkdir -p "${app_dir}/releases" "${app_dir}/scratch" "${link}/app" "${link}/ca"
+	rm -rf "${work}/run" "${work}/data"
+	mkdir -p "${baked_dir}/releases" "${app_dir}/releases" "${app_dir}/scratch" "${link}/app" "${link}/ca"
 	printf 'not-a-real-certificate\n' >"${link}/ca/brenn-ca.pem"
 	{
 		printf 'URL=%s\n' "$url"
@@ -122,7 +125,8 @@ setup() {
 
 run_fetch() {
 	env BRENN_APP_DIR="$app_dir" BRENN_PROVISIONING_LINK="$link" \
-		BRENN_CONFIG_LIB="$config_lib" \
+		BRENN_CONFIG_LIB="$config_lib" BRENN_APP_LIB="$app_lib" \
+		BRENN_BAKED_DIR="$baked_dir" \
 		BRENN_APP_CURL="${work}/curl" BRENN_APP_RESTART="${work}/restart" \
 		BRENN_APP_RETRY_BASE=0 BRENN_APP_RETRY_MAX=0 \
 		"$@" 2>&1
@@ -259,7 +263,8 @@ setup
 make_curl 4
 
 out=$(env BRENN_APP_DIR="$app_dir" BRENN_PROVISIONING_LINK="$link" \
-	BRENN_CONFIG_LIB="$config_lib" \
+	BRENN_CONFIG_LIB="$config_lib" BRENN_APP_LIB="$app_lib" \
+	BRENN_BAKED_DIR="$baked_dir" \
 	BRENN_APP_CURL="${work}/curl" BRENN_APP_RESTART="${work}/restart" \
 	BRENN_APP_RETRY_BASE=1 BRENN_APP_RETRY_MAX=2 \
 	"$fetch" 2>&1)
@@ -506,11 +511,105 @@ make_payload ninth
 setup
 make_curl 0
 printf 'half a payload' >"${app_dir}/.download.99999"
+printf 'half an upload' >"${app_dir}/.bake.99999"
 
 out=$(run_fetch "$fetch" --once)
 rc=$?
 t_eq "a fetch after an interrupted one succeeds" "$rc" 0
 t_eq "and the partial download it found is gone" \
 	"$(find "$app_dir" -maxdepth 1 -name '.download.*' | wc -l)" 0
+t_eq "as is an upload a killed bake left" \
+	"$(find "$app_dir" -maxdepth 1 -name '.bake.*' | wc -l)" 0
+
+# --- a fetch that is told to stop ----------------------------------------------
+
+# Stopping the unit, or shutting down, sends the loop SIGTERM, most likely in
+# the middle of a download that is going nowhere. It cleans up and ends then,
+# as killed by the signal, rather than retrying until the service manager gives
+# up and kills it. The outer timeout's KILL is only there so that a fetch which
+# carries on fails this case rather than hanging the suite.
+make_payload stopped
+setup
+make_curl 0
+cat >"${work}/curl" <<-EOF
+	#!/bin/sh
+	sleep 30
+	exit 22
+EOF
+timeout -k 5 2 env BRENN_APP_DIR="$app_dir" BRENN_PROVISIONING_LINK="$link" \
+	BRENN_CONFIG_LIB="$config_lib" BRENN_APP_LIB="$app_lib" \
+	BRENN_BAKED_DIR="$baked_dir" \
+	BRENN_APP_CURL="${work}/curl" BRENN_APP_RESTART="${work}/restart" \
+	BRENN_APP_RETRY_BASE=0 BRENN_APP_RETRY_MAX=0 \
+	"$fetch" >/dev/null 2>&1
+rc=$?
+t_eq "a looping fetch sent SIGTERM mid-download ends on it" "$rc" 124
+t_eq "and leaves no download behind" \
+	"$(find "$app_dir" -maxdepth 1 -name '.download.*' | wc -l)" 0
+
+# --- a device that was baked while the fetch waited ---------------------------
+
+# The unit's condition keeps a baked device from fetching at boot, but it is
+# read once. An operator who bakes while the fetch is waiting out an outage
+# would otherwise have the baked payload replaced by the fetched one the moment
+# the server came back. So every attempt of the loop asks again, and a baked
+# device ends the loop as a success with nothing more downloaded. The bake
+# lands while the first attempt is failing, which is the only way to tell an
+# attempt that asks from a loop that asked once before it started.
+make_payload tenth
+setup
+make_curl 1000
+mkdir -p "${baked_dir}/releases/baked-1"
+cat >"${work}/curl" <<-EOF
+	#!/bin/sh
+	printf '%s\n' "\$*" >>"${work}/curl-args"
+	ln -sfn releases/baked-1 "${baked_dir}/active"
+	echo "stub: refusing" >&2
+	exit 22
+EOF
+chmod 0755 "${work}/curl"
+pushed4="${app_dir}/releases/dev-4"
+mkdir -p "$pushed4"
+printf '#!/bin/sh\necho pushed4\n' >"${pushed4}/run"
+chmod 0755 "${pushed4}/run"
+env BRENN_APP_DIR="$app_dir" BRENN_APP_RESTART="${work}/restart" \
+	"$activate" "$pushed4" >/dev/null 2>&1
+
+out=$(timeout 10 env BRENN_APP_DIR="$app_dir" BRENN_PROVISIONING_LINK="$link" \
+	BRENN_CONFIG_LIB="$config_lib" BRENN_APP_LIB="$app_lib" \
+	BRENN_BAKED_DIR="$baked_dir" \
+	BRENN_APP_CURL="${work}/curl" BRENN_APP_RESTART="${work}/restart" \
+	BRENN_APP_RETRY_BASE=0 BRENN_APP_RETRY_MAX=0 \
+	"$fetch" 2>&1)
+rc=$?
+t_eq "the waiting fetch on a device baked between attempts ends as a success" "$rc" 0
+t_contains "and says why" "$out" "brenn-app-fetch: device is baked; nothing to fetch"
+t_eq "having asked for the one download it made before the bake and no more" \
+	"$([ -e "${work}/curl-args" ] && wc -l <"${work}/curl-args" || echo 0)" 1
+t_eq "and changed nothing that runs" "$(current_name)" dev-4
+
+# A resync is an operator asking for the fetched payload on a device they know
+# is baked, so a single attempt does not ask the question: it downloads, and a
+# failure is reported as one.
+make_curl 1000
+out=$(run_fetch "$fetch" --once)
+rc=$?
+t_eq "a single attempt on a baked device still fetches" "$((rc != 0))" 1
+t_contains "and reports the download it made" "$out" \
+	"brenn-app-fetch: could not download https://payload.example.internal/payload.tar.gz"
+t_eq "which the downloader was asked for" "$(wc -l <"${work}/curl-args")" 1
+t_eq "and what was running stays running" "$(current_name)" dev-4
+
+# A link whose release is gone is not baked mode, the reading the units'
+# conditions give it, so the loop fetches as on any device that is not baked.
+make_payload eleventh
+setup
+make_curl 0
+ln -sfn releases/does-not-exist "${baked_dir}/active"
+out=$(run_fetch "$fetch")
+rc=$?
+t_eq "the fetch on a device with a dangling baked link fetches" "$rc" 0
+t_eq "which the downloader was asked for" "$(wc -l <"${work}/curl-args")" 1
+t_eq "and what it fetched is current" "$(cat "${app_dir}/current/lib/marker" 2>/dev/null)" eleventh
 
 t_done

@@ -29,6 +29,11 @@ as its working directory, and with:
 | `BRENN_CA_FILE` | The trust anchor to use for anything the payload fetches. |
 | `TMPDIR` | Scratch space, in RAM, inside the payload store's memory budget. |
 
+`BRENN_CA_FILE` names a path that exists only when the device's provisioning
+carries a trust anchor. A fetched payload always has one, since the fetch
+itself needs it; a baked payload can run on a device provisioned without one,
+and must not assume the file is there.
+
 The payload runs from a memory-backed filesystem, so nothing it does costs the
 device's flash a write unless it deliberately writes under `BRENN_DATA_DIR`.
 That is discouraged and exists for the rare asset genuinely worth keeping
@@ -94,15 +99,30 @@ everything else; it is on flash, so writing there is a deliberate act.
 
 ## Deploying one
 
-Three ways in, all of which end at the same check and the same atomic switch:
+Four ways in, all of which end at the same check and the same atomic switch:
 
 - **At boot, and on demand.** The device fetches the payload named by its
   provisioning configuration, verifies its digest, unpacks it into memory and
   switches to it. `brenn-app-resync` over SSH does the same thing again without
   a reboot.
+- **Baked onto the device.** `ssh root@<unit> brenn-app-bake < payload.tar.zst`
+  receives a compressed archive into memory, unpacks and switches to it there,
+  and only once it has passed the check writes the archive and its digest to
+  the persistent partition. From then on the device is baked: every boot verifies
+  that archive against its stored digest, unpacks it into memory and runs it,
+  with no network and no operator, and the fetch is skipped even if the
+  provisioning configuration names a payload. Baking again replaces the baked
+  payload; `brenn-app-unbake` leaves baked mode, and the next boot fetches
+  again. A bake is a flash write, and meant to be a rare one. It refuses an
+  uncompressed archive: a compressed one carries its own end, which is how an
+  upload cut short is told from a complete one.
 - **From a workstation, during development.** Copy a tree into the payload
   store and run `brenn-app-activate` on it over SSH. No reboot, no flash write,
   and the same contract check as a released payload.
+
+On a baked device the last two replace the running payload in memory only; the
+baked archive is untouched. `brenn-app-stage` switches back to the baked
+payload without a reboot, and a reboot does the same.
 
 Switching is a symlink rename, so the previous payload keeps running until the
 replacement is complete and has been checked. The payload that was replaced is
@@ -116,10 +136,11 @@ either it succeeds or the trial gives up.
 
 ## Not promised
 
-- Offline autonomy. There is no payload cached on flash; a device with no
-  network has no application until the network returns. A profile that carries
-  its payload inside the image is planned and is not this one.
+- Offline autonomy, except by baking. A device that is not baked has no
+  application without the network, and converges on one when the network
+  returns; a baked one runs its baked payload with no network at all.
 - Any file, path, port, unit or user beyond those named above.
-- That the payload is signed. Today it is trusted because it arrived over TLS
-  from a server the device trusts and matched a digest the device was
-  provisioned with.
+- That the payload is signed. Today a fetched payload is trusted because it
+  arrived over TLS from a server the device trusts and matched a digest the
+  device was provisioned with, and a baked one because root put it there over
+  SSH.

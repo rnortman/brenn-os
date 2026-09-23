@@ -89,6 +89,14 @@ today; none of it has yet run on hardware.
   secret-scanning commit and push gates wired by `make setup-hooks`; and CI that
   independently scans the tree, runs the gate, builds the image, asserts against
   it, and round-trips an update bundle with a throwaway key.
+- **Baked mode: an application that runs with no network.**
+  `ssh root@<unit> brenn-app-bake < payload.tar.zst` checks a payload in RAM,
+  and only once it has passed writes the archive and its digest to the
+  persistent partition. Every boot after that verifies the stored archive and
+  runs it from RAM with no network and no operator, ahead of any payload the
+  provisioning names. Development pushes and resyncs still replace the running
+  payload in RAM only; `brenn-app-stage` goes back to the baked one without a
+  reboot, and `brenn-app-unbake` leaves baked mode.
 
 ### Changed
 
