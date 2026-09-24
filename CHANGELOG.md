@@ -113,6 +113,17 @@ today; none of it has yet run on hardware.
   `brenn-app-resync` (or the next boot), not a provisioning transaction.
   The baked digest is unchanged: it is computed on the device and answers
   for flash, not for a generation.
+- **The pinned Raspberry Pi kernel, 6.18.39 to 6.18.50** (`1:6.18.50-1+rpt1`),
+  **and the boot firmware, `1:1.20260521-3` to `1:1.20260915-1`.** The same
+  drift as the last bump: the archive superseded the kernel metapackage and
+  `raspi-firmware` in place, the pins matched nothing the index still offers,
+  the current versions installed at default priority, and the image suite
+  caught it (`080-package-pins`, `140-package-set`). The versioned 6.18.39
+  packages are still published, but holding them would mean installing the
+  kernel by versioned name instead of through the metapackage — the route the
+  last bump refused, for the same reason. The package set is otherwise
+  unchanged: the only manifest lines that move are the two that spell the
+  kernel version.
 - **The pinned Raspberry Pi kernel, 6.18.34 to 6.18.39** (`1:6.18.39-1+rpt1`).
   That archive supersedes its kernel metapackage in place and publishes no
   snapshot service, so the pinned version stopped being offered under the name

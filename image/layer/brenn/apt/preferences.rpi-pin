@@ -28,11 +28,11 @@
 #      and review what changed.
 
 Package: linux-image-* linux-headers-* linux-kbuild-* linux-base-*
-Pin: version 1:6.18.39-1+rpt1
+Pin: version 1:6.18.50-1+rpt1
 Pin-Priority: 1001
 
 Package: raspi-firmware
-Pin: version 1:1.20260521-3
+Pin: version 1:1.20260915-1
 Pin-Priority: 1001
 
 Package: firmware-brcm80211
