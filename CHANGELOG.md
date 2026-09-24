@@ -167,3 +167,13 @@ today; none of it has yet run on hardware.
   bounded, before it asks, and neither branch names that path — without a label
   the tool prints the command that finds the partition on the device it just
   wrote. Which branch prints, and what each says, are now asserted.
+- **The on-device listener check's UDP half, on first hardware run.** The
+  device test that confirms which network ports a unit has open was written
+  before any unit had run it, and its expected UDP sockets were predictions
+  that turned out wrong: the device was behaving correctly, the test failed.
+  The expected set is now the four sockets actually measured for the local
+  name resolver. The DHCP client's sockets are
+  handled separately, because their address depends on the lease, the unit's
+  hardware address and how many links are up. They are accepted by owner, port
+  and kind of address rather than by exact address, so a stray service on
+  those ports still fails. New host tests cover the matching rules.

@@ -295,3 +295,28 @@ today has no such peer.
 Done when a payload with a public-certificate peer, started from a power
 cycle with the network up, reaches that peer without operator action, and
 the mechanism that made it so is stated in `docs/app-contract.md`.
+
+## `reuse-capture-or-end-copies-dev-eq-status-block`
+
+Several device tests take a multi-row reading with bare `dev_capture` and
+parse it without looking at the command's exit status — for example the
+mount census in `tests/device/040-mounts.test.sh` and the update-status
+report in `tests/device/120-rauc-slots.test.sh`. A reading that fails after
+printing plausible rows can then pass, because a truncated list that still
+holds every expected row satisfies the comparison. The listener census
+checks its captures with a helper local to
+`tests/device/050-listeners.test.sh` (`capture_or_end`), which reports the
+failure in the same words as `dev_eq`/`dev_eq_text` and then ends the test.
+
+Deferred because the fix is a lane-wide convention change: a shared
+capture-or-end helper in `tests/lib/device.sh`, with one source for the
+failure wording that `dev_eq` and `dev_eq_text` also use, host coverage in
+`tests/host/090-device-lane.test.sh`, and the unchecked multi-row captures
+moved onto it. Which captures count as readings that need the check, rather
+than best-effort diagnostics, is a decision to make across the device lane,
+and it is outside the listener correction.
+
+Done when the device lane has one capture-or-end helper with its own host
+coverage, the listener census uses it, and no device test parses a
+multi-row reading without checking the status of the command that produced
+it.
