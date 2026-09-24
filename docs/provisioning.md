@@ -40,10 +40,12 @@ committed one are kept as history and cost only the space they take.
 | `ssh/ssh_host_ed25519_key` | 0600 | The host key. Provisioned rather than generated so a device keeps its host identity across a reflash. It is the only key sshd offers. |
 | `ssh/ssh_host_ed25519_key.pub` | 0644 | Its public half. |
 | `ssh/authorized_keys` | 0644 | The keys admitted to the device. There is no password authentication anywhere, so this file is the entire access-control list. Administration is done as `root`, which is the only account permitted to log in. |
-| `ca/brenn-ca.pem` | 0644 | Conditional. PEM certificate: the trust anchor for every HTTPS connection the device makes, including ones the application payload makes. Required as soon as either of the two files below is present, and pointless without them. |
+| `ca/brenn-ca.pem` | 0644 | Conditional. PEM certificate: the trust anchor for every HTTPS connection the device makes, including ones the application payload makes. Required as soon as `journal/upload.conf` or `app/fetch.conf` is present, and pointless without them. |
 | `rauc/keyring.pem` | 0644 | PEM certificate. Verifies operating-system update bundles; an update that does not verify against it is not installed. |
 | `journal/upload.conf` | 0644 | Optional. `systemd-journal-upload.conf(5)`, with an `[Upload]` section. `URL=` is the collector, and it is `https://` — there is no plaintext option. `TrustedCertificateFile=` names the trust anchor above *through the published path*, `/run/brenn/provisioning/ca/brenn-ca.pem`, since this image carries no distribution certificate store. **Absent means nothing collects this device's logs**, and the journal is in RAM, so they end at the next reboot — an operator's choice to make deliberately, not a file to leave out by accident. |
-| `app/fetch.conf` | 0644 | Optional. Where the application payload comes from: `URL=`, which is `https://`, and `SHA256=`, 64 hex digits, the digest expected of what it returns. Both are required together — the transport says who served the payload, the digest is what says what was served, and a payload that does not match it is discarded rather than run. Absent means the base system runs and no application does. |
+| `app/fetch.conf` | 0644 | Optional. Where the application payload comes from: `URL=`, which is `https://`. What the device trusts is that a server whose certificate chains to `ca/brenn-ca.pem` served the archive at that address, and the server admits the unit by the client certificate below; a `SHA256=` line is refused, since nothing reads one. Absent means the base system runs and no application does. |
+| `app/client.crt` | 0644 | Conditional. PEM certificate: the unit's TLS client certificate, issued by the operator's authority and presented by the payload fetch. Present exactly when `app/fetch.conf` is. |
+| `app/client.key` | 0600 | Conditional. That certificate's private key, PEM. Present exactly when `app/fetch.conf` is. |
 
 The trust anchor is whatever the device's endpoints chain to. A public root —
 the one a certificate issued by a public authority chains to — is as legitimate
@@ -60,7 +62,7 @@ path to it — none of them group- or world-writable. sshd refuses to read an
 access list reachable through a directory somebody else could replace, and it is
 right to. A working copy on a workstation has no such requirement: it may be
 owned by whoever assembles it, the modes in the table are what matters there,
-and ownership is set by the tool that installs it. The two files at mode 0600
+and ownership is set by the tool that installs it. The three files at mode 0600
 are secrets; the rest are readable because services that are not root read them.
 
 A generation is complete or it is not installed. The entries marked optional are
@@ -88,14 +90,18 @@ installed copy do not depend on which of them put it there.
   `ca/brenn-ca.pem` is refused, because the connection it describes could never
   succeed. An anchor with no consumer is accepted — trust staged for a later
   change does nothing until something names it.
+- The payload fetch's three files — `app/fetch.conf`, `app/client.crt`,
+  `app/client.key` — are present together or absent together. A fetch without
+  a certificate is a connection the server refuses forever; a key without a
+  fetch is a secret staged for nothing, so neither direction is allowed.
 - Nothing else is: a stray file — a working copy of a key, an editor's backup —
   is refused rather than carried onto a device, and so is a link out of the
   generation.
 - The modes in the table are what the tools install; what is *enforced* is that
-  neither secret is readable by anyone but its owner, that nothing is writable
+  no secret is readable by anyone but its owner, that nothing is writable
   by group or other, and that no file is executable. A stricter mode is fine.
 - Each file is what it claims to be: a DNS label, 32 hex digits, an OpenSSH
-  private key, PEM certificates, a supplicant configuration naming a country
+  private key, PEM certificates, a PEM private key, a supplicant configuration naming a country
   and at least one network, an access list admitting at least one key.
 - No address is plaintext, and the collector's trust anchor is the one this
   generation carries.
@@ -271,10 +277,10 @@ live in version control. Sourced as shell, `KEY=value`, one to a line.
 | `WIFI_SCAN_SSID` | `1` if the network does not broadcast its name, `0` otherwise (the default). Nothing else is accepted: a spelling of *yes* would read as "the network is broadcast" and produce a unit that never finds a hidden one. |
 | `NTP_SERVER` | A local time server, or empty for the public pool. Empty leaves `net/ntp.conf` out. |
 | `JOURNAL_URL` | The collector, `https://`, or empty. Empty leaves `journal/upload.conf` out — **and then nothing collects this device's logs**. |
-| `APP_URL`, `APP_SHA256` | The payload address and the digest expected of it, or both empty. Both together leave `app/fetch.conf` out; one without the other is refused, because an address with no digest fetches whatever is served and a digest with no address is a decision half made. |
+| `APP_URL` | The payload address, `https://`, or empty. Empty leaves `app/fetch.conf` out. |
 
 A key this table does not name is refused, by name. The file is read in a shell
-of its own holding nothing but these seven, so nothing it sets reaches the
+of its own holding nothing but these six, so nothing it sets reaches the
 assembler's own state — and a misspelled key stops the run instead of reading as
 a feature deliberately left out, which for the optional ones is a legal
 configuration nothing further along would question.
@@ -296,6 +302,8 @@ in it is created private.
   inputs/wifi.d/<name>.conf     optional; one more network per file
   inputs/authorized_keys        the public keys admitted to the device as root
   inputs/brenn-ca.pem           the HTTPS trust anchor, when an endpoint is configured
+  inputs/client.crt             the unit's TLS client certificate, when APP_URL is set
+  inputs/client.key             its private key, when APP_URL is set
   inputs/rauc-keyring.pem       the certificate update bundles are verified against
   identity/machine-id           generated once, then reused
   identity/ssh_host_ed25519_key generated once, then reused
@@ -425,6 +433,16 @@ staged ahead of the endpoint that will use it is harmless, and it is one fewer
 reassembly later. `inputs/rauc-keyring.pem` is demanded unconditionally: A/B
 slots exist from the first boot, and a device that can verify no update bundle
 can only be changed by being taken apart.
+
+`inputs/client.crt` and `inputs/client.key` are demanded exactly when `APP_URL`
+is set and, unlike the anchor, are not carried otherwise. The certificate is
+issued by an authority the operator runs — **not** by the update-signing
+certificate below. That certificate is `CA:TRUE` with no key-usage constraint,
+so a leaf it issued is one RAUC could plausibly accept on a bundle, and trust
+that admits a payload server must not be trust that installs an operating
+system. A public authority cannot issue it either: a public CA issues server
+certificates for names it validates, not client certificates for a site's
+units.
 
 ### Identity is generated once
 

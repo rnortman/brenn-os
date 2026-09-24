@@ -6,13 +6,15 @@
 # ordinary shell, so what they do is asserted by running them against a
 # temporary tree rather than by reading the units that call them. What is
 # exercised here is every branch a device will actually take: a payload that
-# arrives, one whose digest does not match what was promised, one that does not
-# meet the contract, and a server that is down for a while and then is not.
+# arrives, one republished at the same address, one that does not meet the
+# contract, and a server that is down for a while and then is not.
 #
 # The network is the one thing not exercised. The downloader is a stub, because
 # what matters at this level is what the programs do with what comes back —
 # whether the bytes arrived over TLS is asserted of the configuration, in the
-# provisioning contract, and of the unit that runs this at boot.
+# provisioning contract, and of the unit that runs this at boot — and that the
+# unit presented its certificate is asserted of the arguments the downloader
+# was given.
 
 set -uo pipefail
 
@@ -40,7 +42,7 @@ done
 
 # flock is how the store is kept to one writer, and the timeout is how that is
 # shown to be true without a race in the test itself.
-t_require_cmd tar sha256sum flock timeout
+t_require_cmd tar flock timeout
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -100,21 +102,16 @@ make_curl() {
 	chmod 0755 "${work}/curl"
 }
 
-# A fresh store and a fresh provisioning generation for every case, so that
-# what one case leaves behind cannot be what the next one passes on. The digest
-# defaults to the one of whatever is currently being served, because a
-# generation without one is refused: every case here has to get past that to
-# reach what it is about.
+# Every case here gets a fresh store and a fresh generation, so that what one
+# case leaves behind cannot be what the next one passes on.
 setup() {
 	local url=${1:-https://payload.example.internal/payload.tar.gz}
-	local digest=${2:-$(digest_of "$served")}
 	rm -rf "${work}/run" "${work}/data"
 	mkdir -p "${baked_dir}/releases" "${app_dir}/releases" "${app_dir}/scratch" "${link}/app" "${link}/ca"
 	printf 'not-a-real-certificate\n' >"${link}/ca/brenn-ca.pem"
-	{
-		printf 'URL=%s\n' "$url"
-		printf 'SHA256=%s\n' "$digest"
-	} >"${link}/app/fetch.conf"
+	printf 'not-a-real-certificate\n' >"${link}/app/client.crt"
+	printf 'not-a-real-key\n' >"${link}/app/client.key"
+	printf 'URL=%s\n' "$url" >"${link}/app/fetch.conf"
 	: >"$restarts"
 	cat >"${work}/restart" <<-EOF
 		#!/bin/sh
@@ -144,20 +141,16 @@ releases() {
 	find "${app_dir}/releases" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null | sort
 }
 
-digest_of() {
-	sha256sum <"$1" | cut -d' ' -f1
-}
-
 # --- a payload that arrives ---------------------------------------------------
 
 make_payload first
-setup https://payload.example.internal/payload.tar.gz "$(digest_of "$served")"
+setup https://payload.example.internal/payload.tar.gz
 make_curl 0
 
 out=$(run_fetch "$fetch" --once)
 rc=$?
 
-t_eq "a payload whose digest matches is accepted" "$rc" 0
+t_eq "a payload the provisioned server serves is accepted" "$rc" 0
 name=$(current_name)
 case "$name" in
 	fetch-*) t_pass "the payload it fetched is the current one (${name})" ;;
@@ -182,6 +175,9 @@ case "$args" in
 		t_fail "and both the first hop and every later one are held to it" \
 			"asked for: ${args}" ;;
 esac
+for pair in "--cacert ${link}/ca/brenn-ca.pem" "--cert ${link}/app/client.crt" "--key ${link}/app/client.key"; do
+	t_has "the unit presents its provisioned anchor, certificate and key (${pair%% *})" "$args" "$pair"
+done
 
 # An attempt that never ends is the one state the retry loop cannot see: no
 # failure, so no backoff, no log line, and a device that stays without an
@@ -196,26 +192,31 @@ done
 t_eq "current is a relative link into the store" \
 	"$(readlink "${app_dir}/current")" "releases/${name}"
 
-# --- a payload that is not what was promised ----------------------------------
+# --- a payload republished at the same address ------------------------------
 
+# The release loop: nothing about a new build is written to the generation,
+# so publishing to the same URL and fetching again is the whole of a release.
+# The previous release goes, because the store is a capped tmpfs.
 previous=$name
-promised=$(digest_of "$served")
 make_payload second
 make_curl 0
 
 out=$(run_fetch "$fetch" --once)
 rc=$?
 
-t_eq "a payload whose digest does not match is refused" "$((rc != 0))" 1
-
-# Both digests, by name. This line is the only thing that tells an operator why
-# a device is sitting without a payload, and the likeliest reason for it — a
-# payload republished without the generation being updated — is indistinguishable
-# from an unreachable server without it.
-t_contains "and the mismatch says what was promised and what arrived" "$out" \
-	"brenn-app-fetch: digest mismatch: expected ${promised}, got $(digest_of "$served")"
-t_eq "what was running stays running" "$(current_name)" "$previous"
-t_eq "and nothing half-fetched is left in the store" "$(releases)" "$previous"
+t_eq "a payload republished at the same URL is fetched" "$rc" 0
+name=$(current_name)
+case "$name" in
+	fetch-*) t_pass "and becomes the current one (${name})" ;;
+	*) t_fail "and becomes the current one" "current names '${name}'" "${out}" ;;
+esac
+t_eq "it is a new release, not the old one renamed" \
+	"$([ "$name" != "$previous" ] && echo yes || echo no)" yes
+t_eq "and it is the republished build that runs" \
+	"$(cat "${app_dir}/current/lib/marker" 2>/dev/null)" second
+t_eq "the previous release is removed" "$(releases)" "$name"
+t_eq "and the application is restarted onto it" "$(cat "$restarts")" \
+	"$(printf 'restarted\nrestarted')"
 
 # --- a payload that does not meet the contract --------------------------------
 
@@ -302,17 +303,20 @@ rc=$?
 t_eq "a fetch configuration with no URL is refused" "$((rc != 0))" 1
 t_contains "and says why" "$out" "brenn-app-fetch: ${link}/app/fetch.conf names no URL="
 
-# Nothing is downloaded without something to check it against. The provisioning
-# check refuses a generation with no digest, and this is the same refusal made
-# where the payload would otherwise be unpacked and executed — a digest that
-# went missing between the two would be an unverified payload and no error.
+# A digest line is refused where the payload would otherwise be downloaded,
+# and before it is: a reader that let the line stand would have an operator
+# believe something is checked when nothing reads it.
 setup
-sed -i '/^SHA256=/d' "${link}/app/fetch.conf"
+printf 'SHA256=%064d\n' 0 >>"${link}/app/fetch.conf"
+make_curl 0
 out=$(run_fetch "$fetch" --once)
 rc=$?
-t_eq "a fetch configuration with no digest is refused" "$((rc != 0))" 1
-t_contains "and says why" "$out" "brenn-app-fetch: ${link}/app/fetch.conf names no SHA256="
-t_eq "and nothing was downloaded to find that out" "$(releases)" ""
+t_eq "a fetch configuration naming a SHA256= is refused" "$((rc != 0))" 1
+t_contains "and says why" "$out" \
+	"brenn-app-fetch: ${link}/app/fetch.conf names a SHA256=; this image pins the URL and the anchor, not a digest — remove the line"
+t_eq "and nothing was downloaded to find that out" \
+	"$([ -e "${work}/curl-args" ] && echo downloaded || echo nothing)" nothing
+t_eq "and nothing reached the store" "$(releases)" ""
 
 # The other half of the grammar the provisioning check pins: both read a value
 # through the same function, so a space after the `=` cannot mean one thing on
@@ -320,10 +324,8 @@ t_eq "and nothing was downloaded to find that out" "$(releases)" ""
 make_payload spaced
 make_curl 0
 setup
-{
-	printf 'URL= https://payload.example.internal/payload.tar.gz\n'
-	printf 'SHA256= %s\n' "$(digest_of "$served")"
-} >"${link}/app/fetch.conf"
+printf 'URL= https://payload.example.internal/payload.tar.gz\n' \
+	>"${link}/app/fetch.conf"
 out=$(run_fetch "$fetch" --once)
 rc=$?
 t_eq "a value written with space after the = is read the same way here" "$rc" 0
@@ -332,16 +334,13 @@ t_eq "and the payload it names is the current one" \
 
 # The tie-break, on the device side of the same grammar. A file naming a key
 # twice is one somebody edited without deciding, and the bench takes the first
-# of them; a device taking the last would fetch a URL nothing checked and hold
-# it to a digest nothing checked either.
+# of them; a device taking the last would fetch a URL nothing checked.
 make_payload duplicated
 make_curl 0
 setup
 {
 	printf 'URL=https://payload.example.internal/payload.tar.gz\n'
 	printf 'URL=https://payload.example.internal/second.tar.gz\n'
-	printf 'SHA256=%s\n' "$(digest_of "$served")"
-	printf 'SHA256=%064d\n' 0
 } >"${link}/app/fetch.conf"
 out=$(run_fetch "$fetch" --once)
 rc=$?
@@ -357,6 +356,24 @@ rm -f "${link}/ca/brenn-ca.pem"
 out=$(run_fetch "$fetch" --once)
 t_contains "a missing trust anchor is refused before anything is downloaded" "$out" \
 	"brenn-app-fetch: no trust anchor at ${link}/ca/brenn-ca.pem"
+
+setup
+rm -f "${link}/app/client.key"
+make_curl 0
+out=$(run_fetch "$fetch" --once)
+t_contains "a missing client key is refused before anything is downloaded" "$out" \
+	"brenn-app-fetch: no client key at ${link}/app/client.key"
+t_eq "and nothing was downloaded" \
+	"$([ -e "${work}/curl-args" ] && echo downloaded || echo nothing)" nothing
+
+setup
+rm -f "${link}/app/client.crt"
+make_curl 0
+out=$(run_fetch "$fetch" --once)
+t_contains "a missing client certificate is refused before anything is downloaded" "$out" \
+	"brenn-app-fetch: no client certificate at ${link}/app/client.crt"
+t_eq "and nothing was downloaded" \
+	"$([ -e "${work}/curl-args" ] && echo downloaded || echo nothing)" nothing
 
 # --- activating a payload that was pushed by hand -----------------------------
 

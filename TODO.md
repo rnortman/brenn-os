@@ -260,14 +260,13 @@ does not require touching a device.
 ## `app-payload-signing`
 
 An application payload is trusted because it arrived over TLS from a server the
-device trusts and matched the digest the device was provisioned with
-(`image/layer/brenn/app.rootfs-overlay/usr/lib/brenn/brenn-app-fetch`). A baked
+device trusts (`image/layer/brenn/app.rootfs-overlay/usr/lib/brenn/brenn-app-fetch`). A baked
 payload is trusted because root wrote it to the device over SSH
 (`image/layer/brenn/app.rootfs-overlay/usr/lib/brenn/brenn-app-bake`), and is
-checked at every boot only against the digest stored beside it. A digest
-answers for exactly one payload, so every release is also a configuration
-change; a detached signature over the payload would answer for every release a
-publisher ever issues, fetched or baked.
+checked at every boot only against the digest stored beside it. The device
+today checks the server, not the publisher; a detached signature over the
+payload would answer for every release a publisher ever issues, fetched or
+baked.
 
 Deferred because the trust model it would replace is sound for the deployment
 this is being brought up on, and because the signing side of it belongs with the
@@ -276,3 +275,23 @@ separately.
 
 Done when a payload carries a signature, the device verifies it against a
 provisioned public key before unpacking, and an unsigned payload is refused.
+
+## `app-payload-cold-clock`
+
+`brenn-app.service` starts the payload on whatever clock the boot has
+(`image/layer/brenn/app.rootfs-overlay/etc/systemd/system/brenn-app.service`).
+The fetch's own certificate chain is valid from before any image's epoch, so
+a fetch needs no clock, and nothing on the image pulls `time-sync.target`
+into a transaction. A payload whose peers present public certificates — a
+90-day leaf whose `notBefore` is later than the image epoch — can therefore
+meet the image-epoch clock on a power cycle and fail its first handshake.
+
+Deferred because neither answer is free: ordering the payload after a synced
+clock strands an offline unit, and leaving it to the payload means every
+client in it must tolerate a cold clock and retry. Which, and how, is decided
+when a payload that speaks to such a peer is fetched; the payload delivered
+today has no such peer.
+
+Done when a payload with a public-certificate peer, started from a power
+cycle with the network up, reaches that peer without operator action, and
+the mechanism that made it so is stated in `docs/app-contract.md`.

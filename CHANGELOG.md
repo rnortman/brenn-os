@@ -12,6 +12,12 @@ today; none of it has yet run on hardware.
 
 ### Added
 
+- **The payload fetch presents a per-unit client certificate.**
+  `app/client.crt` and `app/client.key` join the generation, required with
+  `app/fetch.conf` and refused without it; `brenn-app-fetch` presents them, so
+  a payload server may require client authentication and a payload may carry
+  the unit's secrets. `inputs/client.{crt,key}` are demanded by the assembler
+  exactly when `APP_URL` is set.
 - **An image builder, and one profile that builds.**
   `make image PROFILE=reachy` produces an appliance image for a Raspberry Pi CM4
   on the robot-base carrier: read-only root on A/B slots, memory-backed system
@@ -61,9 +67,9 @@ today; none of it has yet run on hardware.
   Installing one writes the slot pair that is not running, which then gets
   exactly one boot to prove itself and rolls back on its own if it does not.
 - **Application delivery that costs the flash nothing.** The payload named by
-  the provisioning generation is fetched over TLS into RAM, verified against its
-  digest and run unprivileged, with a live resync and a development push loop
-  that never touch flash. Contract: `docs/app-contract.md`.
+  the provisioning generation is fetched over TLS from a provisioned server into
+  RAM and run unprivileged, with a live resync and a development push loop that
+  never touch flash. Contract: `docs/app-contract.md`.
 - **Appliance behaviour.** Key-only SSH with no listener beside it but the
   name responder, no passwords anywhere, logs shipped off the device, wired or wireless networking with a
   network-set clock, an armed hardware watchdog, and no steady-state writes to
@@ -100,6 +106,13 @@ today; none of it has yet run on hardware.
 
 ### Changed
 
+- **The application fetch pins a URL and a trust anchor, not a digest.**
+  `app/fetch.conf` is `URL=` alone; a `SHA256=` line is refused by the
+  validator and by the fetch, and `APP_SHA256` is no longer a `unit.conf`
+  key. A release is a publish to the served address and a
+  `brenn-app-resync` (or the next boot), not a provisioning transaction.
+  The baked digest is unchanged: it is computed on the device and answers
+  for flash, not for a generation.
 - **The pinned Raspberry Pi kernel, 6.18.34 to 6.18.39** (`1:6.18.39-1+rpt1`).
   That archive supersedes its kernel metapackage in place and publishes no
   snapshot service, so the pinned version stopped being offered under the name

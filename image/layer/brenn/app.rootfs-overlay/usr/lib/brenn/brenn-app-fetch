@@ -5,11 +5,15 @@
 #   brenn-app-fetch [--once]
 #
 # Where it comes from is site configuration, so it arrives with the
-# provisioning generation: a URL, over TLS to a private trust anchor, and the
-# digest expected of what it returns. Nothing about the payload's content is
-# known here — it is a tar archive of a directory tree, and the only thing
-# asked of it is the entry point the contract requires, which the activate step
-# is what checks.
+# provisioning generation: a URL, over TLS to a provisioned trust anchor, with
+# the unit's own provisioned certificate presented on the connection. That is
+# the whole of the trust, in both directions: the server is trusted because
+# its certificate chains to the generation's anchor and names the URL's host;
+# what it serves, it serves to this unit, because the unit proved who it is
+# — which is what lets a payload carry secrets meant for this unit. Nothing
+# about the payload's content is known here — it is a tar archive of a
+# directory tree, and the only thing asked of it is the entry point the
+# contract requires, which the activate step is what checks.
 #
 # It retries until it succeeds. That is deliberate and it is why the retry is a
 # loop in here rather than Restart= on the unit: the health gate waits on this
@@ -68,6 +72,8 @@ stall_seconds=${BRENN_APP_STALL_SECONDS:-60}
 
 conf="${link}/app/fetch.conf"
 ca="${link}/ca/brenn-ca.pem"
+crt="${link}/app/client.crt"
+key="${link}/app/client.key"
 
 once=no
 case "${1:-}" in
@@ -101,17 +107,20 @@ releases="${app_dir}/releases"
 
 [ -r "$conf" ] || die "no fetch configuration at ${conf}"
 [ -r "$ca" ] || die "no trust anchor at ${ca}"
+[ -r "$crt" ] || die "no client certificate at ${crt}"
+[ -r "$key" ] || die "no client key at ${key}"
 [ -d "$releases" ] || die "no payload store at ${releases}"
 
 url=$(brenn_conf_value "$conf" URL)
-digest=$(brenn_conf_value "$conf" SHA256)
 
 [ -n "$url" ] || die "${conf} names no URL="
 
-# Refused here as well as at provisioning time, because this is the program that
-# would otherwise exec the result: transport says who served the payload, the
-# digest is the only thing that says what was served.
-[ -n "$digest" ] || die "${conf} names no SHA256="
+# Refused rather than ignored: a digest line is what a generation assembled by
+# older tooling carries, and a reader that let it stand would have an operator
+# believe something is checked when nothing reads it. This image pins the URL
+# and the anchor.
+[ -z "$(brenn_conf_value "$conf" SHA256)" ] ||
+	die "${conf} names a SHA256=; this image pins the URL and the anchor, not a digest — remove the line"
 
 # Enforced here because this is where the connection is made: nothing this
 # device fetches may travel in the clear.
@@ -124,7 +133,7 @@ esac
 # to retry, and not a payload obtained either.
 baked_status=10
 
-# One download, verified and unpacked, handed to the activate step. Anything
+# One download, unpacked and handed to the activate step. Anything
 # that goes wrong leaves nothing behind: a half-written archive or a partly
 # unpacked tree that survived would be indistinguishable from a payload.
 #
@@ -149,25 +158,18 @@ attempt_locked() {
 	# --proto and --proto-redir, not just the check on the configured URL
 	# above: curl follows a redirect into plaintext by default, and the hop
 	# that carries the payload is the one that has to be encrypted.
+	#
+	# TODO(app-payload-signing): the payload is trusted because the anchored
+	# server served it; a signature would let the device check the publisher,
+	# not the server.
 	if ! "$curl_cmd" --fail --silent --show-error --location \
 		--proto '=https' --proto-redir '=https' \
 		--connect-timeout "$connect_timeout" \
 		--speed-limit "$stall_bytes" --speed-time "$stall_seconds" \
-		--cacert "$ca" --output "$tmp" -- "$url"; then
+		--cacert "$ca" \
+		--cert "$crt" --key "$key" \
+		--output "$tmp" -- "$url"; then
 		note "could not download ${url}"
-		rm -f -- "$tmp"
-		return 1
-	fi
-
-	# What makes the payload trustworthy beyond the transport. A server that has
-	# been made to serve something else fails here.
-	#
-	# TODO(app-payload-signing): a digest provisioned with the device answers
-	# for one payload. A signature would answer for every payload a publisher
-	# ever issues, without a configuration change per release.
-	computed=$(sha256sum <"$tmp" | cut -d' ' -f1)
-	if [ "$computed" != "$digest" ]; then
-		note "digest mismatch: expected ${digest}, got ${computed}"
 		rm -f -- "$tmp"
 		return 1
 	fi

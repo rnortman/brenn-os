@@ -83,9 +83,10 @@ the built image and against temporary trees, not against a device.
   commit or roll back. The mechanism ships in the image, and `make bundle` packs
   a build into the bundle it installs. Building, installing and verifying one is
   `docs/update.md`.
-- **Applications.** The payload is fetched over HTTPS into a memory-backed
-  filesystem at boot, verified, and exec'd unprivileged, with a live resync and
-  a development push loop that never touch flash (`docs/app-contract.md`). A
+- **Applications.** The payload is fetched over HTTPS from a provisioned
+  address, presenting the unit's provisioned client certificate, into a
+  memory-backed filesystem at boot and exec'd unprivileged, with a live resync
+  and a development push loop that never touch flash (`docs/app-contract.md`). A
   device can also be baked: one deliberate write puts a payload's archive on the
   persistent partition, and every boot after that runs it with no network.
 - **CI** builds the image, asserts against it, and round-trips a bundle with a

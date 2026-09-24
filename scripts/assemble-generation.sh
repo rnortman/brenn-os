@@ -19,8 +19,8 @@
 #     filed under in the store. Where those directories live is the operator's
 #     business: this repository holds no unit configuration and points at none.
 #   * The unit's secrets and trust material — wireless credentials, the access
-#     list, the trust anchor, the update keyring — never enter this repository,
-#     which is public. They live in the operator's store
+#     list, the trust anchor, the update keyring, the payload client certificate
+#     and its key — never enter this repository, which is public. They live in the operator's store
 #     (BRENN_PROVISIONING_STORE, by default ~/.brenn-provisioning: a private
 #     directory outside any repository). Whether that store is instead tracked in
 #     a private repository is the operator's call, and docs/provisioning.md says
@@ -194,7 +194,7 @@ done
 
 # Every key a unit's configuration may set, and the only names that come back out
 # of it.
-unit_keys="UNIT_HOSTNAME WIFI_COUNTRY WIFI_SCAN_SSID JOURNAL_URL APP_URL APP_SHA256 NTP_SERVER"
+unit_keys="UNIT_HOSTNAME WIFI_COUNTRY WIFI_SCAN_SSID JOURNAL_URL APP_URL NTP_SERVER"
 
 # The configuration is shell, and reading it with `.` would run it in this
 # script's own namespace: an assignment colliding with an internal name — force,
@@ -202,7 +202,7 @@ unit_keys="UNIT_HOSTNAME WIFI_COUNTRY WIFI_SCAN_SSID JOURNAL_URL APP_URL APP_SHA
 # tool, and unit.conf is a hand-edited file kept in version control. So it is read
 # in a shell that starts with nothing but the keys above, holding the defaults for
 # everything a unit may leave unsaid and empty for everything it has to state, and
-# exactly those seven values come back.
+# exactly those six values come back.
 #
 # Every other name that file sets is returned too, and refused. A misspelled key
 # otherwise reads as a feature deliberately left out — which for the optional ones
@@ -219,7 +219,6 @@ WIFI_COUNTRY=""
 WIFI_SCAN_SSID=0
 JOURNAL_URL=""
 APP_URL=""
-APP_SHA256=""
 NTP_SERVER=""
 __brenn_before=$(compgen -v | sort)
 . "$__brenn_conf"
@@ -256,7 +255,6 @@ WIFI_COUNTRY=""
 WIFI_SCAN_SSID=""
 JOURNAL_URL=""
 APP_URL=""
-APP_SHA256=""
 NTP_SERVER=""
 
 unknown_keys=""
@@ -272,7 +270,6 @@ while IFS= read -r -d '' record; do
 				WIFI_SCAN_SSID) WIFI_SCAN_SSID=$value ;;
 				JOURNAL_URL) JOURNAL_URL=$value ;;
 				APP_URL) APP_URL=$value ;;
-				APP_SHA256) APP_SHA256=$value ;;
 				NTP_SERVER) NTP_SERVER=$value ;;
 				*) die "the configuration reader returned '${record%%=*}', which is not a key" ;;
 			esac
@@ -347,15 +344,6 @@ case $JOURNAL_URL in
 	*) problem "JOURNAL_URL '${JOURNAL_URL}' is not an https:// address; there is no plaintext option" ;;
 esac
 
-# The payload address and its digest are one value in two halves: an address with
-# no digest is a device that fetches whatever is served, and a digest with no
-# address is a decision half made.
-if [ -n "$APP_URL" ] && [ -z "$APP_SHA256" ]; then
-	problem "${unit_conf} sets APP_URL and no APP_SHA256; the digest is what answers for what was served"
-elif [ -z "$APP_URL" ] && [ -n "$APP_SHA256" ]; then
-	problem "${unit_conf} sets APP_SHA256 and no APP_URL; there is nothing for the digest to be of"
-fi
-
 if [ -n "$APP_URL" ]; then
 	case $APP_URL in
 		https://?*)
@@ -364,11 +352,6 @@ if [ -n "$APP_URL" ]; then
 			;;
 		*) problem "APP_URL '${APP_URL}' is not an https:// address; there is no plaintext option" ;;
 	esac
-fi
-
-if [ -n "$APP_SHA256" ]; then
-	printf '%s' "$APP_SHA256" | grep -Eq '^[0-9a-f]{64}$' ||
-		problem "APP_SHA256 is not 64 hex digits: '${APP_SHA256}'"
 fi
 
 if [ -n "$NTP_SERVER" ] && holds_blank "$NTP_SERVER"; then
@@ -405,6 +388,8 @@ wifi_d=${inputs}/wifi.d
 authorized_keys=${inputs}/authorized_keys
 ca_pem=${inputs}/brenn-ca.pem
 keyring_pem=${inputs}/rauc-keyring.pem
+client_crt=${inputs}/client.crt
+client_key=${inputs}/client.key
 
 [ -f "$wifi_conf" ] ||
 	problem "missing ${wifi_conf}: the wireless credentials, as SSID= and PSK= lines (a passphrase, or 64 hex digits); each value is the rest of its line, verbatim and unquoted"
@@ -431,6 +416,17 @@ if [ -n "$APP_URL" ]; then
 fi
 if [ -n "$anchor_for" ] && [ ! -f "$ca_pem" ]; then
 	problem "missing ${ca_pem}: ${unit_conf} sets ${anchor_for}, and the device trusts nothing this generation does not carry (a public root is a legitimate anchor; a leaf certificate is not)"
+fi
+
+# The payload server admits only a unit presenting a certificate its
+# authority issued, so the pair is demanded exactly when a payload is named.
+# Unlike the anchor it is not carried otherwise: a key staged on a device
+# that fetches nothing is a secret for nothing.
+if [ -n "$APP_URL" ]; then
+	[ -f "$client_crt" ] ||
+		problem "missing ${client_crt}: ${unit_conf} sets APP_URL, and the payload server admits only a unit presenting a certificate its authority issued (the unit's TLS client certificate, PEM)"
+	[ -f "$client_key" ] ||
+		problem "missing ${client_key}: ${unit_conf} sets APP_URL, and the payload server admits only a unit presenting a certificate its authority issued (that certificate's private key, PEM)"
 fi
 
 # wifi.conf is the operator's own file, not one of the generation's. A network
@@ -854,10 +850,9 @@ if [ -n "$JOURNAL_URL" ]; then
 fi
 
 if [ -n "$APP_URL" ]; then
-	{
-		echo "URL=${APP_URL}"
-		echo "SHA256=${APP_SHA256}"
-	} | text app/fetch.conf
+	echo "URL=${APP_URL}" | text app/fetch.conf
+	put app/client.crt "$client_crt"
+	put app/client.key "$client_key"
 fi
 
 # Checked before it is anywhere anybody could mistake for finished, by the same

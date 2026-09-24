@@ -59,7 +59,6 @@ write_unit() {
 		echo "WIFI_COUNTRY=US"
 		echo "JOURNAL_URL=https://collector.example.internal:19532"
 		echo "APP_URL=https://payloads.example.internal/${name}.tar.zst"
-		echo "APP_SHA256=$(printf 'payload-%s' "$name" | sha256sum | cut -d' ' -f1)"
 		local line
 		for line in "$@"; do
 			echo "$line"
@@ -74,6 +73,13 @@ cert() {
 	rm -f -- "${1}.key"
 }
 
+cert_with_key() {
+	# cert_with_key <out.crt> <out.key> <cn> — a throwaway certificate whose
+	# key is kept, standing in for the unit's client pair.
+	openssl req -x509 -newkey ed25519 -noenc -days 2 \
+		-subj "/CN=$3" -keyout "$2" -out "$1" >/dev/null 2>&1
+}
+
 # The material every unit's store starts from, minted once. No assertion here
 # depends on one unit's key or certificate differing from another's — they are
 # about presence, PEM-ness, modes and byte-identity with the store copy — and a
@@ -85,6 +91,7 @@ mv "${material}/admin.pub" "${material}/authorized_keys"
 rm -f -- "${material}/admin"
 cert "${material}/brenn-ca.pem" "test-anchor"
 cert "${material}/rauc-keyring.pem" "test-keyring"
+cert_with_key "${material}/client.crt" "${material}/client.key" test-client
 
 fill_store() {
 	# fill_store <unit> [psk]
@@ -93,7 +100,8 @@ fill_store() {
 	local dir="${store}/${unit}/inputs"
 	mkdir -p "$dir"
 	cp -- "${material}/authorized_keys" "${material}/brenn-ca.pem" \
-		"${material}/rauc-keyring.pem" "$dir"
+		"${material}/rauc-keyring.pem" "${material}/client.crt" \
+		"${material}/client.key" "$dir"
 	{
 		echo "SSID=test-network"
 		echo "PSK=${psk}"
@@ -136,6 +144,8 @@ t_has "the wireless credentials are named" "$run_out" "wifi.conf"
 t_has "the access list is named" "$run_out" "authorized_keys"
 t_has "the trust anchor is named" "$run_out" "brenn-ca.pem"
 t_has "the update keyring is named" "$run_out" "rauc-keyring.pem"
+t_has "the client certificate is named" "$run_out" "client.crt"
+t_has "the client key is named" "$run_out" "client.key"
 t_has "the run says nothing was assembled" "$run_out" "nothing was assembled"
 t_eq "no generation was left behind" "$(exists "${store}/gather/generation")" absent
 t_has "the refusal names the store it looked in" "$run_out" \
@@ -205,7 +215,8 @@ t_ok "the provisioning tool accepts the assembled generation" $?
 
 for f in hostname machine-id net/wpa_supplicant-wlan0.conf net/ntp.conf \
 	ssh/ssh_host_ed25519_key ssh/ssh_host_ed25519_key.pub ssh/authorized_keys \
-	ca/brenn-ca.pem rauc/keyring.pem journal/upload.conf app/fetch.conf; do
+	ca/brenn-ca.pem rauc/keyring.pem journal/upload.conf app/fetch.conf \
+	app/client.crt app/client.key; do
 	t_eq "the generation carries ${f}" "$(exists "${gen}/${f}")" present
 done
 
@@ -287,8 +298,8 @@ t_has "the time server drop-in names a server" "$(cat "${gen}/net/ntp.conf")" \
 fetch=$(cat "${gen}/app/fetch.conf")
 t_has "the payload address is the configured one" "$fetch" \
 	"URL=https://payloads.example.internal/"
-grep -Eq '^SHA256=[0-9a-f]{64}$' "${gen}/app/fetch.conf"
-t_ok "the payload digest is 64 hex digits" $?
+t_eq "app/fetch.conf is exactly one URL= line" "$(cat "${gen}/app/fetch.conf")" \
+	"URL=https://payloads.example.internal/reachy-test.tar.zst"
 
 diff -q "${store}/reachy-test/inputs/authorized_keys" "${gen}/ssh/authorized_keys" >/dev/null
 t_ok "the access list is the operator's file" $?
@@ -296,6 +307,13 @@ diff -q "${store}/reachy-test/inputs/brenn-ca.pem" "${gen}/ca/brenn-ca.pem" >/de
 t_ok "the trust anchor is the operator's file" $?
 diff -q "${store}/reachy-test/inputs/rauc-keyring.pem" "${gen}/rauc/keyring.pem" >/dev/null
 t_ok "the update keyring is the operator's file" $?
+diff -q "${store}/reachy-test/inputs/client.crt" "${gen}/app/client.crt" >/dev/null
+t_ok "the client certificate is the operator's file" $?
+diff -q "${store}/reachy-test/inputs/client.key" "${gen}/app/client.key" >/dev/null
+t_ok "and so is its key" $?
+t_eq "the client key is written unreadable to anyone else" \
+	"$(mode_of "${gen}/app/client.key")" 600
+t_eq "and the certificate readable" "$(mode_of "${gen}/app/client.crt")" 644
 
 # The unit's own unit.conf, named directly rather than by its directory: the same
 # unit, the same store entry, because the name comes from the directory either
@@ -449,7 +467,7 @@ t_has "the hex key is used verbatim" \
 # answers SSH and takes updates. It has to assemble, or the first flash waits on
 # infrastructure that does not exist yet.
 
-write_unit bare "JOURNAL_URL=" "APP_URL=" "APP_SHA256="
+write_unit bare "JOURNAL_URL=" "APP_URL="
 fill_store bare
 rm -f "${store}/bare/inputs/brenn-ca.pem"
 run bare
@@ -477,18 +495,22 @@ t_eq "and still carries the payload configuration" \
 "$provision" -n "${work}/dry" "${store}/no-journal/generation" >/dev/null 2>&1
 t_ok "and the tool accepts it" $?
 
-write_unit no-app "APP_URL=" "APP_SHA256="
+write_unit no-app "APP_URL="
 fill_store no-app
 run no-app
 t_ok "a unit with a collector and no payload assembles" $? "$run_out"
 t_eq "and writes no fetch configuration" \
 	"$(exists "${store}/no-app/generation/app/fetch.conf")" absent
+t_eq "and carries no client certificate" \
+	"$(exists "${store}/no-app/generation/app/client.crt")" absent
+t_eq "and no client key" \
+	"$(exists "${store}/no-app/generation/app/client.key")" absent
 t_eq "and still carries the upload drop-in" \
 	"$(exists "${store}/no-app/generation/journal/upload.conf")" present
 
 # An anchor in the store with nothing in this generation reading it is staged
 # trust, not a mistake: it is carried, and the contract check accepts it.
-write_unit staged "JOURNAL_URL=" "APP_URL=" "APP_SHA256="
+write_unit staged "JOURNAL_URL=" "APP_URL="
 fill_store staged
 run staged
 t_ok "a unit with an anchor and nothing to verify assembles" $? "$run_out"
@@ -530,20 +552,36 @@ anchorless() {
 }
 
 anchorless "a collector with no trust anchor is refused" journal-no-ca \
-	"APP_URL=" "APP_SHA256="
+	"APP_URL="
 t_has "and the refusal names the value that demanded it" "$run_out" "JOURNAL_URL"
 anchorless "a payload source with no trust anchor is refused" app-no-ca "JOURNAL_URL="
 t_has "and names that value too" "$run_out" "APP_URL"
 
+# The client pair is demanded exactly when a payload is named: the payload
+# server admits only a unit presenting a certificate its authority issued.
+write_unit no-client-key "JOURNAL_URL="
+fill_store no-client-key
+rm -f "${store}/no-client-key/inputs/client.key"
+refused "a payload source with no client key is refused" no-client-key
+t_has "and names the key" "$run_out" "client.key"
+t_has "and the value that demanded it" "$run_out" "APP_URL"
+t_eq "nothing was assembled" "$(exists "${store}/no-client-key/generation")" absent
+write_unit no-client-crt "JOURNAL_URL="
+fill_store no-client-crt
+rm -f "${store}/no-client-crt/inputs/client.crt"
+refused "a payload source with no client certificate is refused" no-client-crt
+t_has "and names the certificate" "$run_out" "client.crt"
+
 # The keyring is not conditional on anything a unit configures: a device that can
 # verify no update bundle can only be changed by being taken apart.
-write_unit no-keyring "JOURNAL_URL=" "APP_URL=" "APP_SHA256="
+write_unit no-keyring "JOURNAL_URL=" "APP_URL="
 fill_store no-keyring
 rm -f "${store}/no-keyring/inputs/rauc-keyring.pem" \
 	"${store}/no-keyring/inputs/brenn-ca.pem"
 refused "a unit with nothing configured still needs the update keyring" no-keyring
 t_has "the refusal names the keyring" "$run_out" "rauc-keyring.pem"
 t_lacks "and does not ask for an anchor nothing would read" "$run_out" "brenn-ca.pem"
+t_lacks "and does not ask for a client certificate nothing would present" "$run_out" "client.crt"
 
 refuses() {
 	# refuses <desc> <unit> <expected fragment> [unit.conf overrides...]
@@ -582,15 +620,12 @@ refuses "a misspelled key is refused by name" typo-key \
 	"'NTP_SEVER'" "NTP_SEVER=time.example.internal"
 t_has "and the refusal says which keys there are" "$run_out" "NTP_SERVER"
 
-# The payload address and its digest are one decision in two halves. Half of it
-# is the thing an optional pair can get wrong: an address with nothing to check
-# what was served against, or a digest with nothing to fetch.
-refuses "a payload address with no digest is refused" app-no-digest \
-	"sets APP_URL and no APP_SHA256" "APP_SHA256="
-refuses "a digest with no payload address is refused" digest-no-app \
-	"sets APP_SHA256 and no APP_URL" "APP_URL="
-refuses "a truncated digest is refused" short-digest \
-	"is not 64 hex digits" "APP_SHA256=abc123"
+# Nothing reads a digest, so a configuration setting one is refused by name
+# like any other key nobody reads — an operator learns the fetch pins the URL
+# rather than assembling a generation that appears to verify something.
+refuses "a unit.conf naming APP_SHA256 is refused by name" app-sha256 \
+	"'APP_SHA256'" "APP_SHA256=$(printf '%064d' 0)"
+t_has "and the refusal lists the keys that exist" "$run_out" "APP_URL"
 
 # The values that are interpolated raw into drop-ins. A space in one of them
 # assembles cleanly, passes the contract check, and produces a unit that boots,

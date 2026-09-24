@@ -19,6 +19,15 @@ Description=Application payload
 # activate step's restart is what starts this one on each new payload. At boot
 # the condition below does the ordering: a start before any payload is current
 # is skipped, and the activation's restart follows.
+#
+# TODO(app-payload-cold-clock): this unit starts on whatever clock the boot
+# has. The fetch's own certificate chain is valid from before any image's
+# epoch, so a fetch needs no clock, and nothing on the image pulls
+# time-sync.target into a transaction; a payload whose peers present public
+# certificates can therefore meet the image-epoch clock on a power cycle.
+# Ordering this unit after a synced clock would strand an offline unit;
+# leaving it to the payload means every client in it tolerates a cold clock.
+# Which, and how, is decided when a payload that speaks is fetched.
 ConditionPathExists=/run/brenn-app/current/run
 
 StartLimitIntervalSec=0

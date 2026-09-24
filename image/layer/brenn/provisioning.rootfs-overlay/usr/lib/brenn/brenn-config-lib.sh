@@ -31,11 +31,16 @@ rauc/keyring.pem:public"
 #   journal/upload.conf  nothing collects the logs, and the journal is in RAM,
 #                        so they end at the next reboot.
 #   app/fetch.conf       the base system runs and no application does.
-#   ca/brenn-ca.pem      no HTTPS trust is staged. Required as soon as either of
-#                        the two files above is present, which the check
-#                        cross-checks: the image carries no distribution
-#                        certificate store, so an endpoint with no anchor in the
-#                        generation has nothing to verify against.
+#   app/client.crt       the unit's TLS client certificate and its key, which
+#   app/client.key       the fetch presents: the payload server admits only a
+#                        unit holding one that its authority issued. Present exactly
+#                        when app/fetch.conf is, which the check enforces in
+#                        both directions.
+#   ca/brenn-ca.pem      no HTTPS trust is staged. Required as soon as
+#                        journal/upload.conf or app/fetch.conf is present, which
+#                        the check cross-checks: the image carries no
+#                        distribution certificate store, so an endpoint with no
+#                        anchor in the generation has nothing to verify against.
 #
 # The update keyring is not on this list. A/B slots exist from the first boot,
 # and a device that can verify no bundle can only be changed by being taken
@@ -43,7 +48,9 @@ rauc/keyring.pem:public"
 BRENN_CONTRACT_OPTIONAL="net/ntp.conf:public
 ca/brenn-ca.pem:public
 journal/upload.conf:public
-app/fetch.conf:public"
+app/fetch.conf:public
+app/client.crt:public
+app/client.key:secret"
 
 BRENN_CONTRACT_DIRECTORIES="net ssh ca rauc journal app"
 

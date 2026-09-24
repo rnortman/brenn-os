@@ -54,8 +54,9 @@ gen_make() {
 
 	cat >"${dir}/app/fetch.conf" <<-'EOF'
 		URL=https://payload.example.internal/reachy/payload.tar.zst
-		SHA256=0000000000000000000000000000000000000000000000000000000000000000
 	EOF
+	gen_pem CERTIFICATE bm90LWEtcmVhbC1jbGllbnQ= >"${dir}/app/client.crt"
+	gen_pem 'PRIVATE KEY' bm90LWEtcmVhbC1jbGllbnQta2V5 >"${dir}/app/client.key"
 
 	# Spelled out rather than read from the contract the programs share. A
 	# fixture built from the rules it is used to test would conform to whatever
@@ -64,5 +65,6 @@ gen_make() {
 	# until somebody agrees it should.
 	chmod 0755 "$dir" "${dir}"/{net,ssh,ca,rauc,journal,app}
 	find "$dir" -type f -exec chmod 0644 {} +
-	chmod 0600 "${dir}/ssh/ssh_host_ed25519_key" "${dir}/net/wpa_supplicant-wlan0.conf"
+	chmod 0600 "${dir}/ssh/ssh_host_ed25519_key" "${dir}/net/wpa_supplicant-wlan0.conf" \
+		"${dir}/app/client.key"
 }

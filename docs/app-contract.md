@@ -102,9 +102,9 @@ everything else; it is on flash, so writing there is a deliberate act.
 Four ways in, all of which end at the same check and the same atomic switch:
 
 - **At boot, and on demand.** The device fetches the payload named by its
-  provisioning configuration, verifies its digest, unpacks it into memory and
-  switches to it. `brenn-app-resync` over SSH does the same thing again without
-  a reboot.
+  provisioning configuration, presenting the generation's client certificate,
+  unpacks it into memory and switches to it. `brenn-app-resync` over SSH does
+  the same thing again without a reboot.
 - **Baked onto the device.** `ssh root@<unit> brenn-app-bake < payload.tar.zst`
   receives a compressed archive into memory, unpacks and switches to it there,
   and only once it has passed the check writes the archive and its digest to
@@ -141,6 +141,9 @@ either it succeeds or the trial gives up.
   returns; a baked one runs its baked payload with no network at all.
 - Any file, path, port, unit or user beyond those named above.
 - That the payload is signed. Today a fetched payload is trusted because it
-  arrived over TLS from a server the device trusts and matched a digest the
-  device was provisioned with, and a baked one because root put it there over
-  SSH.
+  arrived over TLS from the server the device was provisioned to trust, at the
+  URL it was provisioned with, and was served to this device because it
+  presented its provisioned certificate — so a payload may carry secrets meant
+  for this unit, and on the device they are readable by every local account,
+  since the tree is unpacked world-readable. A baked one is trusted because
+  root put it there over SSH.

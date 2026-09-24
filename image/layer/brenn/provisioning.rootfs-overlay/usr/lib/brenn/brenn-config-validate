@@ -247,11 +247,19 @@ if have ssh/authorized_keys; then
 		problem "ssh/authorized_keys admits nobody"
 fi
 
-for pem in ca/brenn-ca.pem rauc/keyring.pem; do
+for pem in ca/brenn-ca.pem rauc/keyring.pem app/client.crt; do
 	have "$pem" || continue
 	grep -q 'BEGIN CERTIFICATE' "${gen}/${pem}" ||
 		problem "${pem} is not a PEM certificate"
 done
+
+if have app/client.key; then
+	# PKCS#8 from `openssl req -newkey ec` is `BEGIN PRIVATE KEY`; the
+	# traditional encodings are admitted too. An OpenSSH key or a certificate
+	# put here by mistake is neither.
+	grep -Eq -- '-----BEGIN (EC |RSA )?PRIVATE KEY-----' "${gen}/app/client.key" ||
+		problem "app/client.key is not a PEM private key (an OpenSSH key or a certificate is not one)"
+fi
 
 if have journal/upload.conf; then
 	up="${gen}/journal/upload.conf"
@@ -271,19 +279,35 @@ fi
 if have app/fetch.conf; then
 	fetch="${gen}/app/fetch.conf"
 	# Read exactly the way the device reads it, so that a file accepted here is
-	# a file the runner resolves to the same URL and the same digest.
+	# a file the runner resolves to the same URL.
 	url=$(brenn_conf_value "$fetch" URL)
 	case $url in
 		https://*) ;;
 		*) problem "app/fetch.conf has no https:// URL= (there is no plaintext option)" ;;
 	esac
-	# The digest is what answers for the payload once it has arrived: the
-	# transport says who served it, not what was served. Without one, a
-	# generation would have the device unpack and exec whatever came back, so a
-	# missing digest is refused exactly like a malformed one.
-	digest=$(brenn_conf_value "$fetch" SHA256)
-	printf '%s' "$digest" | grep -Eq '^[0-9a-f]{64}$' ||
-		problem "app/fetch.conf names no SHA256= of 64 hex digits"
+	# A digest line is refused, not ignored: nothing on the device reads one,
+	# and a generation that carries it says something false about what is
+	# checked. The fetch pins the URL and the anchor.
+	[ -z "$(brenn_conf_value "$fetch" SHA256)" ] ||
+		problem "app/fetch.conf names a SHA256=; the fetch pins the URL and the anchor, not a digest"
+fi
+
+# The fetch presents the unit's certificate, so the three files travel
+# together. A fetch without one is a connection the server refuses forever on
+# a device nobody watches; a key without a fetch is a secret staged for
+# nothing, and unlike an anchor it is not harmless to carry ahead — so the
+# "other direction" the anchor is allowed below is refused here.
+app_present=""
+app_missing=""
+for f in app/fetch.conf app/client.crt app/client.key; do
+	if have "$f"; then
+		app_present="${app_present} ${f}"
+	else
+		app_missing="${app_missing} ${f}"
+	fi
+done
+if [ -n "$app_present" ] && [ -n "$app_missing" ]; then
+	problem "the payload fetch needs app/fetch.conf, app/client.crt and app/client.key together; present:${app_present}; missing:${app_missing}"
 fi
 
 # An endpoint that is configured needs the anchor it is verified against. The

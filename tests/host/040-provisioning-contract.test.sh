@@ -74,7 +74,7 @@ done
 # to validate, or the whole of the first flash waits on infrastructure that does
 # not exist.
 new_gen
-rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/ca/brenn-ca.pem"
+rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/app/client.crt" "${gen}/app/client.key" "${gen}/ca/brenn-ca.pem"
 t_eq "a generation with no collector, no payload and no anchor is accepted" \
 	"$(verdict)" accepted
 
@@ -83,15 +83,16 @@ rm -f "${gen}/journal/upload.conf"
 t_eq "a generation with no log collector is accepted" "$(verdict)" accepted
 
 new_gen
-rm -f "${gen}/app/fetch.conf"
-t_eq "a generation with no application payload is accepted" "$(verdict)" accepted
+rm -f "${gen}/app/fetch.conf" "${gen}/app/client.crt" "${gen}/app/client.key"
+t_eq "a generation with no application payload — none of its three files — is accepted" \
+	"$(verdict)" accepted
 
 # The cross-check, in both directions. An endpoint with no anchor is a connection
 # that can never succeed — the image carries no distribution certificate store —
 # and on a device it would be retried forever with nobody watching, so it is
 # refused here. An anchor with nothing to verify is merely staged.
 new_gen
-rm -f "${gen}/ca/brenn-ca.pem" "${gen}/app/fetch.conf"
+rm -f "${gen}/ca/brenn-ca.pem" "${gen}/app/fetch.conf" "${gen}/app/client.crt" "${gen}/app/client.key"
 t_eq "a collector with no trust anchor is refused" "$(verdict)" refused
 
 new_gen
@@ -99,7 +100,7 @@ rm -f "${gen}/ca/brenn-ca.pem" "${gen}/journal/upload.conf"
 t_eq "a payload source with no trust anchor is refused" "$(verdict)" refused
 
 new_gen
-rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf"
+rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/app/client.crt" "${gen}/app/client.key"
 t_eq "a trust anchor with nothing to verify is accepted" "$(verdict)" accepted
 
 # The local time server is optional in the same way: without it the
@@ -246,31 +247,58 @@ new_gen
 sed -i '/^\[Upload\]/d' "${gen}/journal/upload.conf"
 t_eq "an upload configuration with no section is refused" "$(verdict)" refused
 
+# Nothing on the device reads a digest, so a generation that names one says
+# something false about what is checked. Refused, not ignored.
 new_gen
-sed -i 's/^SHA256=.*/SHA256=not-a-digest/' "${gen}/app/fetch.conf"
-t_eq "a payload digest that is not one is refused" "$(verdict)" refused
+printf 'SHA256=%064d\n' 0 >>"${gen}/app/fetch.conf"
+t_eq "a fetch source naming a SHA256= is refused" "$(verdict)" refused
 
-# The payload is executable code arriving over the network, and the digest is
-# the only thing that answers for it once TLS has said who served it. Leaving it
-# out is not a lighter configuration, it is an unverified one — and it would be
-# a one-character mistake away at every provisioning.
+# The fetch presents the unit's certificate, so its three files travel
+# together: a fetch with no certificate is a connection the server refuses
+# forever, and a key with no fetch is a secret staged for nothing.
 new_gen
-sed -i '/^SHA256=/d' "${gen}/app/fetch.conf"
-t_eq "a payload source naming no digest is refused" "$(verdict)" refused
+rm -f "${gen}/app/client.crt"
+t_eq "a fetch source without a client certificate is refused" "$(verdict)" refused
+t_has "and the refusal names what is missing" "$(cat "${work}/out")" "missing: app/client.crt"
 
 new_gen
-sed -i 's/^SHA256=/Sha256=/' "${gen}/app/fetch.conf"
-t_eq "a digest under a key nobody reads is refused, not silently skipped" \
-	"$(verdict)" refused
+rm -f "${gen}/app/client.key"
+t_eq "a fetch source without a client key is refused" "$(verdict)" refused
+
+new_gen
+rm -f "${gen}/app/fetch.conf"
+t_eq "a client certificate and key with no fetch source are refused" "$(verdict)" refused
+
+new_gen
+chmod 0644 "${gen}/app/client.key"
+t_eq "a world-readable client key is refused" "$(verdict)" refused
+
+new_gen
+chmod 0640 "${gen}/app/client.key"
+t_eq "a group-readable client key is refused" "$(verdict)" refused
+
+new_gen
+chmod 0400 "${gen}/app/client.key"
+t_eq "a client key stricter than the schema is accepted" "$(verdict)" accepted
+
+new_gen
+gen_pem CERTIFICATE bm90LWEtY2VydA== >"${gen}/app/client.key"
+t_eq "a client key that is a certificate is refused" "$(verdict)" refused
+
+new_gen
+gen_pem 'OPENSSH PRIVATE KEY' bm90LWEta2V5 >"${gen}/app/client.key"
+t_eq "a client key that is an OpenSSH key is refused" "$(verdict)" refused
+
+new_gen
+gen_pem 'PRIVATE KEY' bm90LWEtY2VydA== >"${gen}/app/client.crt"
+t_eq "a client certificate that is not a certificate is refused" "$(verdict)" refused
 
 # One grammar, read by one function: what the bench accepts here is what the
-# device resolves to the same URL and digest. A space after the `=` is the
+# device resolves to the same URL. A space after the `=` is the
 # spelling most likely to parse differently across independent implementations.
 new_gen
-{
-	printf 'URL= https://payload.example.internal/reachy/payload.tar.zst\n'
-	printf 'SHA256= %064d\n' 0
-} >"${gen}/app/fetch.conf"
+printf 'URL= https://payload.example.internal/reachy/payload.tar.zst\n' \
+	>"${gen}/app/fetch.conf"
 t_eq "a fetch source written with space after the = is accepted" "$(verdict)" accepted
 
 # The published grammar's tie-break: a file naming a key twice is one somebody
@@ -282,7 +310,6 @@ new_gen
 {
 	printf 'URL=https://payload.example.internal/reachy/payload.tar.zst\n'
 	printf 'URL=http://payload.example.internal/reachy/payload.tar.zst\n'
-	printf 'SHA256=%064d\n' 0
 } >"${gen}/app/fetch.conf"
 t_eq "with a key named twice, the first assignment is what is read" \
 	"$(verdict)" accepted
@@ -291,18 +318,9 @@ new_gen
 {
 	printf 'URL=http://payload.example.internal/reachy/payload.tar.zst\n'
 	printf 'URL=https://payload.example.internal/reachy/payload.tar.zst\n'
-	printf 'SHA256=%064d\n' 0
 } >"${gen}/app/fetch.conf"
 t_eq "and a later line does not rescue a first one that is refused" \
 	"$(verdict)" refused
-
-new_gen
-{
-	printf 'URL=https://payload.example.internal/reachy/payload.tar.zst\n'
-	printf 'SHA256=not-a-digest\n'
-	printf 'SHA256=%064d\n' 0
-} >"${gen}/app/fetch.conf"
-t_eq "which holds for the digest as well" "$(verdict)" refused
 
 # Anything else in the directory. None of the rules above cover a file nobody
 # expected, and the ones that turn up in practice — a working copy of a key, an
@@ -362,6 +380,10 @@ else
 		"$(stat -c '%a' "${target}/provisioning/gen-1/net/wpa_supplicant-wlan0.conf" 2>/dev/null)" 600
 	t_eq "the access list is installed readable" \
 		"$(stat -c '%a' "${target}/provisioning/gen-1/ssh/authorized_keys" 2>/dev/null)" 644
+	t_eq "the client key is installed unreadable to anyone else" \
+		"$(stat -c '%a' "${target}/provisioning/gen-1/app/client.key" 2>/dev/null)" 600
+	t_eq "the client certificate is installed readable" \
+		"$(stat -c '%a' "${target}/provisioning/gen-1/app/client.crt" 2>/dev/null)" 644
 	t_eq "nothing is left staged" \
 		"$([ -e "${target}/provisioning/gen-1.new" ] && echo present || echo missing)" missing
 
@@ -408,14 +430,14 @@ else
 	# and re-checks the copy — and this is the exact generation the first flash puts
 	# on a device, so it cannot be the one shape that has never been through it.
 	new_gen
-	rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/ca/brenn-ca.pem"
+	rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/app/client.crt" "${gen}/app/client.key" "${gen}/ca/brenn-ca.pem"
 	bare="${work}/target-bare"
 	mkdir -p "$bare"
 	run_provision "$bare" "$gen"
 	t_eq "installing a generation with no collector, payload or anchor succeeds" "$rc" 0
 	t_eq "it too is committed, not on trial" \
 		"$(readlink "${bare}/provisioning/active" 2>/dev/null)" gen-1
-	for f in journal/upload.conf app/fetch.conf ca/brenn-ca.pem; do
+	for f in journal/upload.conf app/fetch.conf app/client.crt app/client.key ca/brenn-ca.pem; do
 		t_eq "and what it leaves out stays left out: ${f}" \
 			"$([ -e "${bare}/provisioning/gen-1/${f}" ] && echo present || echo missing)" \
 			missing
