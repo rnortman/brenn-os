@@ -911,7 +911,7 @@ if [ -z "$APP_URL" ]; then
 	echo "assemble-generation: no application payload: the device runs the base system and no application"
 fi
 if [ -z "$NTP_SERVER" ]; then
-	echo "assemble-generation: no local time server: the device uses the distribution's public pool"
+	echo "assemble-generation: no local time server: the device uses a server its link's DHCP lease names, else the distribution's public pool"
 fi
 
 echo

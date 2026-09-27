@@ -9,9 +9,11 @@
 #  brenn-provisioning
 # METAEND
 ---
-# Two links, both DHCP, neither of them individually required: the carrier
-# lives on wireless in the field and on a cable at a bench, and reaching the
-# network at all is what the rest of the system waits for.
+# Two kinds of link, both DHCP, neither of them individually required: a
+# cable — the onboard port or a USB Ethernet adapter, one file for any wired
+# link — and the radio, the other file. The carrier lives on wireless in the
+# field and on a cable at a bench or to a host acting as the gateway, and
+# reaching the network at all is what the rest of the system waits for.
 #
 # Nothing here knows a network name, a passphrase or a country. All of that is
 # in the wireless supplicant's configuration file, which is provisioned, so
@@ -22,8 +24,15 @@
 # configuration, and it is carried by `country=` in the provisioned supplicant
 # configuration.
 #
-# The link files in the overlay must replace the device layer's generated
-# defaults; overlay-after-hooks ordering is what makes that work.
+# The device layer generates a file per link, named for the link
+# (01-eth0.network, 02-wlan0.network), and the overlay is applied after those
+# hooks. The wireless file replaces the generated one by sharing its name. The
+# wired file does not share a name — it is 01-wired.network because it matches
+# a class of links, not eth0 — so the overlay also ships 01-eth0.network as a
+# link to /dev/null, which masks the generated file. Naming the wired file
+# 01-eth0.network would make the mask unnecessary only by making the
+# file's name contradict what it matches, and would hide again that the name
+# is coupled to the device layer's.
 #
 # iproute2 and iw ship because the device acceptance suite is held to what they
 # report: the listener census is a security invariant and program attribution

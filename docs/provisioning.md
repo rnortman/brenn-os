@@ -36,7 +36,7 @@ committed one are kept as history and cost only the space they take.
 | `hostname` | 0644 | One DNS label, no domain. Lower case, digits and hyphens. |
 | `machine-id` | 0644 | 32 lower-case hex digits, as `machine-id(5)` defines them. Stable for the life of the device: it is the identity its logs are filed under. |
 | `net/wpa_supplicant-wlan0.conf` | 0600 | `wpa_supplicant.conf(5)`. Carries `country=` — the regulatory domain is site configuration, not an image default — and one or more `network={…}` blocks. |
-| `net/ntp.conf` | 0644 | Optional. A `systemd-timesyncd` drop-in naming a local time server as `NTP=`. Absent means the distribution's default public pool. |
+| `net/ntp.conf` | 0644 | Optional. A `systemd-timesyncd` drop-in naming a local time server as `NTP=`. Absent, the time server is one a link's DHCP lease names, and the distribution's default public pool otherwise; a server named here or by a lease ranks above that fallback. |
 | `ssh/ssh_host_ed25519_key` | 0600 | The host key. Provisioned rather than generated so a device keeps its host identity across a reflash. It is the only key sshd offers. |
 | `ssh/ssh_host_ed25519_key.pub` | 0644 | Its public half. |
 | `ssh/authorized_keys` | 0644 | The keys admitted to the device. There is no password authentication anywhere, so this file is the entire access-control list. Administration is done as `root`, which is the only account permitted to log in. |
@@ -275,7 +275,7 @@ live in version control. Sourced as shell, `KEY=value`, one to a line.
 | `UNIT_HOSTNAME` | Required. The `hostname` above: one DNS label. |
 | `WIFI_COUNTRY` | Required. The two-letter regulatory domain the radio operates under. No image carries a default, because a radio's legal channels are a property of where it is. |
 | `WIFI_SCAN_SSID` | `1` if the network does not broadcast its name, `0` otherwise (the default). Nothing else is accepted: a spelling of *yes* would read as "the network is broadcast" and produce a unit that never finds a hidden one. |
-| `NTP_SERVER` | A local time server, or empty for the public pool. Empty leaves `net/ntp.conf` out. |
+| `NTP_SERVER` | A local time server, or empty. Empty leaves `net/ntp.conf` out, and the device then uses a server its link's DHCP lease names, else the distribution's public pool. |
 | `JOURNAL_URL` | The collector, `https://`, or empty. Empty leaves `journal/upload.conf` out — **and then nothing collects this device's logs**. |
 | `APP_URL` | The payload address, `https://`, or empty. Empty leaves `app/fetch.conf` out. |
 

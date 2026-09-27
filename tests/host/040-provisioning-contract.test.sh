@@ -103,8 +103,9 @@ new_gen
 rm -f "${gen}/journal/upload.conf" "${gen}/app/fetch.conf" "${gen}/app/client.crt" "${gen}/app/client.key"
 t_eq "a trust anchor with nothing to verify is accepted" "$(verdict)" accepted
 
-# The local time server is optional in the same way: without it the
-# distribution's public pool applies, which is a working clock.
+# The local time server is optional in the same way: without it a server a
+# link's DHCP lease names applies, else the distribution's public pool, and
+# either is a working clock.
 new_gen
 t_eq "a generation with no local time server is accepted" "$(verdict)" accepted
 

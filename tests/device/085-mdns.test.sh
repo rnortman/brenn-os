@@ -44,12 +44,31 @@ dev_eq "the resolver is running" \
 # LLMNR is read here too, on each link. It is the other half of the same knob: the
 # charter admits one responder, and enabling mDNS puts LLMNR in play. A file the
 # image lane reads is not a reading off the device.
+#
+# "Every link" is every link networkd has configured, read off the device: the
+# wired file matches a class of name, so a USB Ethernet adapter plugged in is
+# configured under whatever name the kernel gave it and is checked the same way,
+# and one that is not plugged in is simply not in the list. The links that must
+# be configured on the bench are EXPECT_LINK_INTERFACES; one of those missing is
+# a link the image stopped managing. `networkctl list` prints index, name, type,
+# operational state and setup state.
+list_status=0
+dev_capture "networkctl list --no-legend" || list_status=$?
+configured=$(printf '%s\n' "$DEV_OUT" | awk '$5 == "configured" { print $2 }')
+if [ "$list_status" -ne 0 ]; then
+	t_fail "networkd lists its links" "$DEV_OUT"
+fi
 for iface in $EXPECT_LINK_INTERFACES; do
+	t_contains "networkd has configured ${iface}" "$configured" "$iface"
+done
+
+while IFS= read -r iface; do
+	[ -n "$iface" ] || continue
 	dev_eq "the responder is enabled on ${iface}" \
 		"resolvectl mdns $(dev_quote "$iface") | sed -n 's/.*: *//p'" yes
 	dev_eq "and LLMNR is still off on ${iface}" \
 		"resolvectl llmnr $(dev_quote "$iface") | sed -n 's/.*: *//p'" no
-done
+done <<<"$configured"
 
 # The resolver's socket on 5353 is asserted by the listener census
 # (050-listeners.test.sh), which owns the whole UDP service-socket set.

@@ -615,7 +615,8 @@ refuses "a lower-case regulatory domain is refused" lc-country \
 
 # A key nobody reads is not an omission the operator chose. For the optional ones
 # absence is a legal configuration, so a typo would assemble, validate, install
-# and boot a device quietly using the public pool or shipping no logs at all.
+# and boot a device quietly taking whichever time server the lease names, or the
+# pool, instead of the one the operator typed, or shipping no logs at all.
 refuses "a misspelled key is refused by name" typo-key \
 	"'NTP_SEVER'" "NTP_SEVER=time.example.internal"
 t_has "and the refusal says which keys there are" "$run_out" "NTP_SERVER"

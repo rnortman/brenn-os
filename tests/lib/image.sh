@@ -464,6 +464,37 @@ img_ini_section_value() {
 	'
 }
 
+# A list-valued key from inside one `[section]`, space-separated on one line.
+#
+# systemd reads a list key such as a `.network` file's `[Match] Name=` by
+# appending each assignment to the list and emptying the list on an empty
+# assignment, so a list split over several lines is one list. Only that rule is
+# applied here; what an entry means, such as a leading `!`, is the caller's.
+img_ini_section_list() {
+	printf '%s\n' "$1" | awk -v want="[$2]" -v key="$3" '
+		/^[[:space:]]*\[/ {
+			line = $0
+			sub(/^[[:space:]]+/, "", line)
+			sub(/[[:space:]]+$/, "", line)
+			section = line
+			next
+		}
+		section == want {
+			line = $0
+			sub(/^[[:space:]]+/, "", line)
+			if (index(line, key "=") != 1) next
+			value = substr(line, length(key) + 2)
+			sub(/^[[:space:]]+/, "", value)
+			sub(/[[:space:]]+$/, "", value)
+			if (value == "") { list = ""; next }
+			n = split(value, words, /[[:space:]]+/)
+			for (i = 1; i <= n; i++)
+				list = (list == "") ? words[i] : list " " words[i]
+		}
+		END { if (list != "") print list }
+	'
+}
+
 # One `Key=value` out of an ini-style file's content, last occurrence wins,
 # which is how systemd resolves a repeated key within a file.
 img_ini_value() {

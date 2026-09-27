@@ -1,0 +1,21 @@
+# The earliest time this image boots with, UTC.
+#
+# A unit has no real-time clock, so a cold boot starts at the image's epoch —
+# earlier than the notBefore of a public certificate the payload's peer
+# presents — and a TLS handshake to that peer fails until NTP has synchronised
+# the clock. brenn-clock-floor raises the clock to this value before the time
+# client starts. NTP over the wired link, from a time server the DHCP lease
+# names, is the real fix; this is the stopgap for a TLS consumer running on an
+# unsynchronised clock. TODO(app-payload-cold-clock): the unit, its script and
+# this file go when that entry closes.
+#
+# It goes stale when the peer's certificate renews past it (a Let's Encrypt
+# leaf renews about every sixty days), and is bumped then, by an image build.
+#
+# Deliberately not SOURCE_DATE_EPOCH (image/config/brenn-common.yaml): that
+# value also selects the Debian snapshot, and the ext4 build lowers every later
+# file timestamp to it, which is why the floor is this file's content and not
+# any file's mtime.
+#
+# Exactly one non-comment line, in the form 2026-09-27T00:00:00Z.
+2026-09-27T00:00:00Z

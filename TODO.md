@@ -292,6 +292,10 @@ client in it must tolerate a cold clock and retry. Which, and how, is decided
 when a payload that speaks to such a peer is fetched; the payload delivered
 today has no such peer.
 
+The stopgap until then is the boot-clock floor, a date the image raises a cold
+clock to (`image/layer/brenn/time.rootfs-overlay/usr/lib/brenn/clock-floor`),
+bumped there by an image build each time the peer's certificate renews past it.
+
 Done when a payload with a public-certificate peer, started from a power
 cycle with the network up, reaches that peer without operator action, and
 the mechanism that made it so is stated in `docs/app-contract.md`.

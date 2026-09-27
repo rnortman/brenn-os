@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Raise the system clock to the image's pinned floor if it is behind it.
+#
+# The floor is the one non-comment line of the pin file, a UTC time. A clock
+# already at or past it is left alone; one behind it is set to it. Either way
+# one line says which, with every time in the pin's own form. A pin that
+# cannot be read — no value, two, or one `date` rejects — is a failed unit and
+# leaves the clock untouched.
+#
+# The pin's path is overridable so the decision can be exercised off-device.
+
+set -eu
+
+pin=${BRENN_CLOCK_FLOOR_FILE:-/usr/lib/brenn/clock-floor}
+
+die() {
+	echo "clock-floor: $*" >&2
+	exit 1
+}
+
+render() {
+	date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ
+}
+
+[ -r "$pin" ] || die "cannot read ${pin}"
+values=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$pin") ||
+	die "no floor in ${pin}"
+count=$(printf '%s\n' "$values" | grep -c .)
+[ "$count" -eq 1 ] || die "${count} values in ${pin}; expected exactly one"
+floor=$(date -u -d "$values" +%s 2>/dev/null) ||
+	die "unparseable floor in ${pin}: ${values}"
+case $floor in
+	'' | *[!0-9]*) die "unparseable floor in ${pin}: ${values}" ;;
+esac
+
+now=$(date -u +%s)
+case $now in
+	'' | *[!0-9]*) die "unreadable clock: ${now}" ;;
+esac
+
+if [ "$now" -lt "$floor" ]; then
+	date -u -s "@${floor}" >/dev/null
+	echo "clock-floor: advanced from $(render "$now") to $(render "$floor") (floor $(render "$floor"))"
+else
+	echo "clock-floor: kept $(render "$now") (floor $(render "$floor"))"
+fi

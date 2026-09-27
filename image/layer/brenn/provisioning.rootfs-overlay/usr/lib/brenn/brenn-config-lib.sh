@@ -27,7 +27,8 @@ rauc/keyring.pem:public"
 # file being there, so a device provisioned without one starts without that
 # piece:
 #
-#   net/ntp.conf         the distribution's public pool sets the clock.
+#   net/ntp.conf         a server a link's DHCP lease names sets the clock,
+#                        else the distribution's public pool.
 #   journal/upload.conf  nothing collects the logs, and the journal is in RAM,
 #                        so they end at the next reboot.
 #   app/fetch.conf       the base system runs and no application does.

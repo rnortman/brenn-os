@@ -79,6 +79,31 @@ t_eq "a key absent from the named section reads as nothing" \
 t_eq "a section that is not there reads as nothing" \
 	"$(img_ini_section_value "$sectioned" slot.boot.0 device)" ""
 
+# --- a list key within a section: assignments append, an empty one resets --
+
+listed="[Match]
+Name=eth*  en*
+Name= usb*
+
+[Network]
+Name=wlan*"
+
+t_eq "a list split over several lines is one list, in order" \
+	"$(img_ini_section_list "$listed" Match Name)" "eth* en* usb*"
+t_eq "and takes nothing from another section" \
+	"$(img_ini_section_list "$listed" Network Name)" "wlan*"
+t_eq "an empty assignment empties the list read so far" \
+	"$(img_ini_section_list "[Match]
+Name=eth*
+Name=
+Name=usb*" Match Name)" "usb*"
+t_eq "a list emptied last reads as nothing" \
+	"$(img_ini_section_list "[Match]
+Name=eth*
+Name=  " Match Name)" ""
+t_eq "a list key absent from the section reads as nothing" \
+	"$(img_ini_section_list "$listed" Match Type)" ""
+
 # --- sshd: first value obtained wins, keywords are case-insensitive --------
 
 sshd="# a comment

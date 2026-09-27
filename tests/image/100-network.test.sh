@@ -8,7 +8,8 @@
 # is pointed at a provisioned file and conditioned on it, so an image is the
 # same image everywhere and an unconfigured device is quietly offline rather
 # than guessing. The second is that the generic configuration the device layer
-# generates has actually been replaced — it makes every link required, which
+# generates is gone as live configuration — the wireless file replaced by
+# name, the wired file masked — because it makes every link required, which
 # on a device with one cable and one radio means waiting out a timeout on
 # every boot.
 
@@ -24,23 +25,88 @@ img_open_system_root
 units=/etc/systemd/system
 networkdir=/etc/systemd/network
 
-# Both links: an address by DHCP, and either of them counts as being online.
-# RequiredForOnline is the tell that these are our files and not the generated
-# ones, which carry no [Link] section.
-for file in $EXPECT_LINK_FILES; do
-	link=${file#*-}
-	link=${link%.network}
-	if content=$(img_ext4_cat "$IMG_SPEC" "${networkdir}/${file}"); then
-		t_eq "${file} configures ${link}" "$(img_ini_value "$content" Name)" "$link"
-		t_eq "${link} takes an address by DHCP" "$(img_ini_value "$content" DHCP)" yes
-		t_eq "${link} counts towards being online" \
-			"$(img_ini_value "$content" RequiredForOnline)" yes
-		t_eq "${link} answers the device's own name" \
-			"$(img_ini_value "$content" MulticastDNS)" yes
-	else
-		t_fail "${link} is configured" "no ${networkdir}/${file}"
-	fi
-done
+# The directory holds exactly the two regular link files this image ships plus
+# the one mask over the device layer's generated wired file. The generated
+# files make every link required; a leftover one, or any .network entry of
+# either kind added without its assertions here, is configuration nobody
+# reviewed.
+if names=$(img_ext4_ls "$IMG_SPEC" "$networkdir"); then
+	regular="" masked=""
+	while IFS= read -r name; do
+		case "$name" in *.network) ;; *) continue ;; esac
+		case "$(img_ext4_type "$IMG_SPEC" "${networkdir}/${name}")" in
+			regular) regular+="${name}"$'\n' ;;
+			symlink) masked+="${name}"$'\n' ;;
+			*) t_fail "every .network entry is a file or a mask" \
+				"${name} is neither a regular file nor a symlink" ;;
+		esac
+	done <<<"$names"
+	t_eq_text "the regular .network files are exactly this image's own" \
+		"$(printf '%s' "$regular" | sort)" \
+		"$(printf '%s\n' "$EXPECT_LINK_FILES" | tr ' ' '\n' | sort)"
+	t_eq_text "the masked .network names are exactly the expected ones" \
+		"$(printf '%s' "$masked" | sort)" \
+		"$(printf '%s\n' "$EXPECT_LINK_MASKED" | tr ' ' '\n' | sort)"
+	for name in $EXPECT_LINK_MASKED; do
+		if link=$(img_ext4_link "$IMG_SPEC" "${networkdir}/${name}"); then
+			t_eq "${name} is masked" "$link" /dev/null
+		else
+			t_fail "${name} is masked" "no link at ${networkdir}/${name}"
+		fi
+	done
+else
+	t_fail "the .network entries are exactly this image's own" "no ${networkdir}"
+fi
+
+# Every wired link — the onboard port, a USB Ethernet adapter under whatever
+# name the kernel gives it. An address by DHCPv4 and nothing else: router
+# advertisements are refused, so a cable plugged into a network that sends them
+# gains no second default route. The lease's time server is taken, stated
+# rather than left to the default, because on a cable to a host acting as the
+# gateway it is the only time source there is. RequiredForOnline is the tell
+# that these are our files and not the generated ones, which carry no [Link]
+# section. Read by section, because the same key could appear in two.
+file="${networkdir}/${EXPECT_WIRED_FILE}"
+if content=$(img_ext4_cat "$IMG_SPEC" "$file"); then
+	t_eq "the wired file matches every wired link name" \
+		"$(img_ini_section_list "$content" Match Name)" "$EXPECT_WIRED_MATCH"
+	t_eq "a wired link takes an address by DHCP" \
+		"$(img_ini_section_value "$content" Network DHCP)" yes
+	t_eq "a wired link answers the device's own name" \
+		"$(img_ini_section_value "$content" Network MulticastDNS)" yes
+	t_eq "a wired link refuses router advertisements" \
+		"$(img_ini_section_value "$content" Network IPv6AcceptRA)" "$EXPECT_WIRED_RA"
+	t_eq "a wired link registers the device's name with the lease" \
+		"$(img_ini_section_value "$content" DHCPv4 SendHostname)" yes
+	t_eq "a wired link takes the lease's search domains" \
+		"$(img_ini_section_value "$content" DHCPv4 UseDomains)" yes
+	t_eq "a wired link takes the lease's time server" \
+		"$(img_ini_section_value "$content" DHCPv4 UseNTP)" yes
+	t_eq "a wired link counts towards being online" \
+		"$(img_ini_section_value "$content" Link RequiredForOnline)" yes
+else
+	t_fail "wired links are configured" "no ${file}"
+fi
+
+# The radio. The same address configuration, and router advertisements left
+# accepted: this is the link a unit uses on networks the operator does not
+# control, and the absence of the setting is asserted so that the difference
+# from the wired link stays a stated one.
+file="${networkdir}/${EXPECT_WLAN_FILE}"
+if content=$(img_ext4_cat "$IMG_SPEC" "$file"); then
+	t_eq "the wireless file matches the radio" \
+		"$(img_ini_section_list "$content" Match Name)" "$EXPECT_WLAN_MATCH"
+	t_eq "the radio takes an address by DHCP" \
+		"$(img_ini_section_value "$content" Network DHCP)" yes
+	t_eq "the radio answers the device's own name" \
+		"$(img_ini_section_value "$content" Network MulticastDNS)" yes
+	t_eq "the radio counts towards being online" \
+		"$(img_ini_section_value "$content" Link RequiredForOnline)" yes
+	t_eq "the radio leaves router advertisements at networkd's default" \
+		"$(img_ini_value "$content" IPv6AcceptRA)" ""
+else
+	t_fail "the radio is configured" "no ${file}"
+fi
 
 # ...and one of them is enough. The default is every managed link, so this is
 # an override, and an override that silently stopped applying would cost a

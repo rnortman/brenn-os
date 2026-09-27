@@ -1,5 +1,8 @@
 # The wireless link. The supplicant authenticates it; this only carries the
-# address configuration, so it is the same as the wired link.
+# address configuration, so it is the same as the wired link but for one thing:
+# it accepts router advertisements, and the wired link does not. This is the
+# link a unit uses on networks the operator does not control, and its IPv6
+# policy is left at networkd's default.
 
 [Match]
 Name=wlan0

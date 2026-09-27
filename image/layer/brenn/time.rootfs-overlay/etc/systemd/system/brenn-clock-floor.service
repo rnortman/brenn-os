@@ -1,0 +1,20 @@
+[Unit]
+Description=Raise the boot clock to the image's pinned floor
+
+# Before the time client, so that its own step to the recorded timestamp finds
+# the clock already past it, and before sysinit.target, which every TLS consumer
+# on the image is ordered after. Running that early means it cannot take the
+# default dependencies without ordering itself after the target it precedes.
+# It needs nothing beyond the root filesystem.
+DefaultDependencies=no
+Before=systemd-timesyncd.service time-set.target sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/brenn/brenn-clock-floor
+
+[Install]
+WantedBy=sysinit.target

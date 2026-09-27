@@ -12,6 +12,20 @@ today; none of it has yet run on hardware.
 
 ### Added
 
+- **USB Ethernet adapters now work, with the same settings as the onboard
+  port.** Before, only the onboard port (`eth0`) was configured; an adapter
+  (which shows up as `eth1` or similar) was left with no address. Now every
+  wired port gets its address by DHCP, is reachable by the device's name over
+  mDNS, and uses a time server if the DHCP server offers one. Wired ports
+  ignore IPv6 router advertisements, so plugging into an unfamiliar network
+  cannot add a second default route; wifi is unchanged.
+- **The clock starts no earlier than a pinned date.** The device has no
+  battery-backed clock, so it used to boot believing it was the image's build
+  date, which can be older than a server's TLS certificate and make secure
+  connections fail until network time arrives. A boot-time service now moves
+  the clock forward to the date in `/usr/lib/brenn/clock-floor` (currently
+  2026-09-27). This is a stopgap; the date has to be bumped in a new image
+  whenever the server's certificate renews past it.
 - **The payload fetch presents a per-unit client certificate.**
   `app/client.crt` and `app/client.key` join the generation, required with
   `app/fetch.conf` and refused without it; `brenn-app-fetch` presents them, so

@@ -2,8 +2,9 @@
 # X-Env-Layer-Name: brenn-time
 # X-Env-Layer-Category: base
 # X-Env-Layer-Desc: Clock. The time client takes an optional local time server
-#  from the selected provisioning generation and otherwise uses the
-#  distribution's public pool.
+#  from the selected provisioning generation or from a link's DHCP lease, and
+#  otherwise uses the distribution's public pool. A pinned floor raises a cold
+#  clock at boot.
 # X-Env-Layer-Version: 1.0.0
 # X-Env-Layer-Requires: systemd-timesyncd,
 #  brenn-provisioning
@@ -15,11 +16,20 @@
 # ordered after the clock is set, and the clock is set from the network.
 #
 # No time server is named in this image. Naming one would be site
-# configuration; leaving the setting unset means the distribution's public pool
-# is the fallback, and a provisioned drop-in — a local server, on a site that
-# runs one — takes precedence over the fallback by definition.
+# configuration. The time server is one the provisioned drop-in names — a local
+# server, on a site that runs one — or one a link's DHCP lease names, both of
+# which rank above the fallback, and the distribution's public pool otherwise.
 #
 # The drop-in is a symlink into the published provisioning path, so it resolves
 # to whichever generation this boot selected, or to nothing at all.
+#
+# The boot-clock floor. A unit with no battery boots at the image's epoch,
+# which can be earlier than the notBefore of a public certificate a TLS peer
+# presents. brenn-clock-floor.service raises the clock to the date pinned in
+# /usr/lib/brenn/clock-floor before the time client starts, and leaves a clock
+# already past it alone. The date is that file's content, not any file's mtime:
+# the ext4 build lowers every mtime later than SOURCE_DATE_EPOCH to it. The pin
+# is bumped, by an image build, when the peer's certificate renews past it; the
+# file says when and why.
 mmdebstrap:
   packages: []

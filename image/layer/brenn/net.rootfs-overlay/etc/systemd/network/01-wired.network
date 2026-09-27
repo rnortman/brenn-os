@@ -1,0 +1,36 @@
+# Every wired link: the onboard port on a bench, a USB Ethernet adapter cabled
+# to a host that is the gateway on that cable. Both are the same kind of link,
+# so one policy covers both, and neither is required on its own — each is one
+# way to be online.
+#
+# The kernel names an Ethernet-class device eth<N> while the image masks the
+# MAC-based and default .link naming; en* covers predictable naming coming
+# back, usb* a driver that names itself.
+
+[Match]
+Name=eth* en* usb*
+
+[Network]
+DHCP=yes
+# The device answers its own name on this link. Stated per link as well as
+# globally in the resolver's configuration, because which way the default falls
+# is a property of how systemd was built.
+MulticastDNS=yes
+# Addressing and routing on a cable come from DHCPv4 and nothing else. A router
+# advertisement from whatever the cable happens to be plugged into would install
+# a default route beside the lease's; refusing it also means no DHCPv6 client
+# starts. The link-local address stays, so mDNS still answers over IPv6.
+IPv6AcceptRA=no
+
+[DHCPv4]
+# The name the network registers is the provisioned one; it is set before this
+# link is configured.
+SendHostname=yes
+UseDomains=yes
+# A time server the lease names reaches the time client as a per-link server,
+# which ranks above the distribution's fallback pool. This is networkd's
+# default, stated so the policy is read from the file.
+UseNTP=yes
+
+[Link]
+RequiredForOnline=yes

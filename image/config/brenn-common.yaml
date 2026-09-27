@@ -9,6 +9,12 @@ env:
   # The Debian snapshot the root filesystem is built from. The builder derives
   # the snapshot.debian.org timestamp from this, so fixing it is what makes a
   # rebuild of an old commit produce the same base system. Bump deliberately.
+  #
+  # It is not the clock a unit boots with. The time client's baked recorded
+  # timestamp carries this date, and the ext4 build lowers every later file
+  # timestamp to it, so no file's mtime can carry a later one. The boot-clock
+  # floor is a separate pin, the content of
+  # image/layer/brenn/time.rootfs-overlay/usr/lib/brenn/clock-floor.
   SOURCE_DATE_EPOCH: 1784505600
 
 image:
